@@ -107,6 +107,7 @@ static void ipmi_bt_handle_event(IPMIInterface *s)
 {
     IPMIBtInterface *bt = IPMI_INTERFACE_BT(s);
 
+    /* ipmi_lock is already claimed. */
     if (s->inlen < 4) {
         goto out;
     }
@@ -165,6 +166,7 @@ static void ipmi_bt_handle_rsp(IPMIInterface *s, uint8_t msg_id,
 {
     IPMIBtInterface *bt = IPMI_INTERFACE_BT(s);
 
+    /* ipmi_lock is already claimed. */
     if (bt->waiting_rsp == msg_id) {
         bt->waiting_rsp++;
         if (rsp_len > (sizeof(s->outmsg) - 2)) {
@@ -199,6 +201,7 @@ static uint64_t ipmi_bt_ioport_read(void *opaque, hwaddr addr, unsigned size)
     IPMIInterface *s = &bt->intf;
     uint32_t ret = 0xff;
 
+    ipmi_lock(s);
     switch (addr & 3) {
     case 0:
         ret = bt->control_reg;
@@ -219,6 +222,7 @@ static uint64_t ipmi_bt_ioport_read(void *opaque, hwaddr addr, unsigned size)
         ret = bt->mask_reg;
         break;
     }
+    ipmi_unlock(s);
     return ret;
 }
 
@@ -228,6 +232,7 @@ static void ipmi_bt_ioport_write(void *opaque, hwaddr addr, uint64_t val,
     IPMIBtInterface *bt = opaque;
     IPMIInterface *s = &bt->intf;
 
+    ipmi_lock(s);
     switch (addr & 3) {
     case 0:
         if (IPMI_BT_GET_CLR_WR(val)) {
@@ -284,6 +289,7 @@ static void ipmi_bt_ioport_write(void *opaque, hwaddr addr, uint64_t val,
         }
         break;
     }
+    ipmi_unlock(s);
 }
 
 static const MemoryRegionOps ipmi_bt_io_ops = {

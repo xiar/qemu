@@ -114,6 +114,7 @@ typedef struct SMBusIPMIDevice {
     SMBusDevice smbusdev;
 
     uint8_t slave_addr;
+    bool threaded_bmc;
     CharDriverState *chr;
     IPMIInterface *intf;
     IPMIFwInfo fwinfo;
@@ -206,6 +207,7 @@ static int smbus_ipmi_initfn(SMBusDevice *dev)
     intf = IPMI_INTERFACE(intfobj);
     bmc->intf = intf;
     intf->bmc = bmc;
+    intf->threaded_bmc = ipmi->threaded_bmc;
     ipmi_interface_init(intf, &err);
     if (err) {
         goto out_err;
@@ -247,6 +249,7 @@ static int smbus_ipmi_initfn(SMBusDevice *dev)
 static Property smbus_ipmi_properties[] = {
     DEFINE_PROP_UINT8("slave_addr", SMBusIPMIDevice, slave_addr,  0),
     DEFINE_PROP_CHR("chardev",  SMBusIPMIDevice, chr),
+    DEFINE_PROP_BOOL("threadbmc",  SMBusIPMIDevice, threaded_bmc, false),
     DEFINE_PROP_END_OF_LIST(),
 };
 

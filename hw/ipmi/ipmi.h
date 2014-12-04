@@ -28,6 +28,7 @@
 #include "exec/memory.h"
 #include "qemu-common.h"
 #include "hw/qdev.h"
+#include "qemu/thread.h"
 
 #define MAX_IPMI_MSG_SIZE 300
 
@@ -87,6 +88,16 @@ typedef struct IPMIInterface {
 
     IPMIBmc *bmc;
 
+    bool threaded_bmc;
+
+    /* For threaded BMC */
+    QemuThread thread;
+    QemuCond waker;
+    QemuMutex lock;
+
+    /* For non-threaded BMC */
+    int lockcount;
+
     bool do_wake;
 
     qemu_irq irq;
@@ -133,6 +144,7 @@ typedef struct IPMIInterfaceClass {
     /*
      * Handle an event that occurred on the interface, generally the.
      * target writing to a register.
+     * Must be called with ipmi_lock held.
      */
     void (*handle_if_event)(struct IPMIInterface *s);
 
@@ -148,6 +160,7 @@ typedef struct IPMIInterfaceClass {
 
     /*
      * Handle a response from the bmc.
+     * Must be called with ipmi_lock held.
      */
     void (*handle_rsp)(struct IPMIInterface *s, uint8_t msg_id,
                        unsigned char *rsp, unsigned int rsp_len);
@@ -172,12 +185,37 @@ void ipmi_interface_reset(IPMIInterface *s);
 #define TYPE_IPMI_BMC_EXTERN    "ipmi-bmc-extern"
 #define TYPE_IPMI_BMC_SIMULATOR "ipmi-bmc-sim"
 
+static inline void ipmi_lock(IPMIInterface *s)
+{
+    if (s->threaded_bmc) {
+        qemu_mutex_lock(&s->lock);
+    } else {
+        s->lockcount++;
+    }
+}
+
+static inline void ipmi_unlock(IPMIInterface *s)
+{
+    if (s->threaded_bmc) {
+        qemu_mutex_unlock(&s->lock);
+    } else {
+        s->lockcount--;
+    }
+}
+
 static inline void ipmi_signal(IPMIInterface *s)
 {
-    s->do_wake = 1;
-    while (s->do_wake) {
-        s->do_wake = 0;
-        (IPMI_INTERFACE_GET_CLASS(s))->handle_if_event(s);
+    if (s->threaded_bmc) {
+        s->do_wake = 1;
+        qemu_cond_signal(&s->waker);
+    } else {
+        s->do_wake = 1;
+        s->lockcount++;
+        while (s->do_wake) {
+            s->do_wake = 0;
+            (IPMI_INTERFACE_GET_CLASS(s))->handle_if_event(s);
+        }
+        s->lockcount--;
     }
 }
 
@@ -198,6 +236,7 @@ typedef struct IPMIBmcClass {
 
     /*
      * Handle a command to the bmc.
+     * Must be called with ipmi_lock held.
      */
     void (*handle_command)(struct IPMIBmc *s,
                            uint8_t *cmd, unsigned int cmd_len,

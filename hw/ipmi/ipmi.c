@@ -27,6 +27,27 @@
 #include "sysemu/sysemu.h"
 #include "qmp-commands.h"
 
+/*
+ * Create a separate thread for the IPMI interface itself.  This is a
+ * better simulation and lets the IPMI interface do things asynchronously
+ * if necessary.
+ */
+static void *ipmi_thread(void *opaque)
+{
+    IPMIInterface *s = opaque;
+
+    qemu_mutex_lock(&s->lock);
+    for (;;) {
+        qemu_cond_wait(&s->waker, &s->lock);
+        while (s->do_wake) {
+            s->do_wake = 0;
+            (IPMI_INTERFACE_GET_CLASS(s))->handle_if_event(s);
+        }
+    }
+    qemu_mutex_unlock(&s->lock);
+    return NULL;
+}
+
 static int ipmi_do_hw_op(IPMIInterface *s, enum ipmi_op op, int checkonly)
 {
     switch (op) {
@@ -89,6 +110,12 @@ void ipmi_interface_init(IPMIInterface *s, Error **errp)
 
     if (!s->slave_addr) {
         s->slave_addr = 0x20;
+    }
+
+    if (s->threaded_bmc) {
+        qemu_mutex_init(&s->lock);
+        qemu_cond_init(&s->waker);
+        qemu_thread_create(&s->thread, "ipmi-bmc", ipmi_thread, s, 0);
     }
 }
 

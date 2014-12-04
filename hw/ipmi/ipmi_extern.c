@@ -140,6 +140,7 @@ static void extern_timeout(void *opaque)
     IPMIExternBmc *es = opaque;
     IPMIInterface *s = es->parent.intf;
 
+    ipmi_lock(s);
     if (es->connected) {
         if (es->waiting_rsp && (es->outlen == 0)) {
             IPMIInterfaceClass *k = IPMI_INTERFACE_GET_CLASS(s);
@@ -153,6 +154,7 @@ static void extern_timeout(void *opaque)
             continue_send(es);
         }
     }
+    ipmi_unlock(s);
 }
 
 static void addchar(IPMIExternBmc *es, unsigned char ch)
@@ -182,6 +184,7 @@ static void ipmi_extern_handle_command(IPMIBmc *b,
     uint8_t err = 0, csum;
     unsigned int i;
 
+    ipmi_lock(s);
     if (es->outlen) {
         /* We already have a command queued.  Shouldn't ever happen. */
         fprintf(stderr, "IPMI KCS: Got command when not finished with the"
@@ -222,6 +225,7 @@ static void ipmi_extern_handle_command(IPMIBmc *b,
     continue_send(es);
 
  out:
+    ipmi_unlock(s);
     return;
 }
 
@@ -304,9 +308,11 @@ static int can_receive(void *opaque)
 static void receive(void *opaque, const uint8_t *buf, int size)
 {
     IPMIExternBmc *es = opaque;
+    IPMIInterface *s = es->parent.intf;
     int i;
     unsigned char hw_op;
 
+    ipmi_lock(s);
     for (i = 0; i < size; i++) {
         unsigned char ch = buf[i];
 
@@ -361,9 +367,15 @@ static void receive(void *opaque, const uint8_t *buf, int size)
             break;
         }
     }
+    ipmi_unlock(s);
     return;
 
  out_hw_op:
+    ipmi_unlock(s);
+    /*
+     * We don't want to handle hardware operations while holding the
+     * lock, that may call back into this code to report a reset.
+     */
     handle_hw_op(es, hw_op);
 }
 
@@ -374,6 +386,7 @@ static void chr_event(void *opaque, int event)
     IPMIInterfaceClass *k = IPMI_INTERFACE_GET_CLASS(s);
     unsigned char v;
 
+    ipmi_lock(s);
     switch (event) {
     case CHR_EVENT_OPENED:
         es->connected = 1;
@@ -415,14 +428,18 @@ static void chr_event(void *opaque, int event)
         }
         break;
     }
+    ipmi_unlock(s);
 }
 
 static void ipmi_extern_handle_reset(IPMIBmc *b)
 {
     IPMIExternBmc *es = IPMI_BMC_EXTERN(b);
+    IPMIInterface *s = es->parent.intf;
 
+    ipmi_lock(s);
     es->send_reset = 1;
     continue_send(es);
+    ipmi_unlock(s);
 }
 
 static int ipmi_extern_post_migrate(void *opaque, int version_id)

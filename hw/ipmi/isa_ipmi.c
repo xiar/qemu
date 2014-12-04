@@ -41,6 +41,7 @@ typedef struct ISAIPMIDevice {
     uint8_t regspacing;
     int32 isairq;
     uint8_t slave_addr;
+    bool threaded_bmc;
     CharDriverState *chr;
     IPMIInterface *intf;
     IPMIFwInfo fwinfo;
@@ -78,6 +79,7 @@ static void ipmi_isa_realizefn(DeviceState *dev, Error **errp)
     ipmi->regspacing = 1;
     intf->io_base = ipmi->iobase;
     intf->slave_addr = ipmi->slave_addr;
+    intf->threaded_bmc = ipmi->threaded_bmc;
     ipmi_interface_init(intf, errp);
     if (*errp) {
         return;
@@ -139,6 +141,7 @@ static Property ipmi_isa_properties[] = {
     DEFINE_PROP_INT32("irq",   ISAIPMIDevice, isairq,  5),
     DEFINE_PROP_UINT8("slave_addr", ISAIPMIDevice, slave_addr,  0),
     DEFINE_PROP_CHR("chardev",  ISAIPMIDevice, chr),
+    DEFINE_PROP_BOOL("threadbmc",  ISAIPMIDevice, threaded_bmc, false),
     DEFINE_PROP_END_OF_LIST(),
 };
 

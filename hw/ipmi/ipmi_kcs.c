@@ -197,6 +197,7 @@ static void ipmi_kcs_handle_rsp(IPMIInterface *s, uint8_t msg_id,
 {
     IPMIKcsInterface *kcs = IPMI_INTERFACE_KCS(s);
 
+    /* ipmi_lock is already claimed. */
     if (kcs->waiting_rsp == msg_id) {
         kcs->waiting_rsp++;
         if (rsp_len > sizeof(s->outmsg)) {
@@ -220,6 +221,7 @@ static uint64_t ipmi_kcs_ioport_read(void *opaque, hwaddr addr, unsigned size)
     IPMIKcsInterface *kcs = opaque;
     uint32_t ret;
 
+    ipmi_lock(&kcs->intf);
     switch (addr & 1) {
     case 0:
         ret = kcs->data_out_reg;
@@ -241,6 +243,7 @@ static uint64_t ipmi_kcs_ioport_read(void *opaque, hwaddr addr, unsigned size)
         }
         break;
     }
+    ipmi_unlock(&kcs->intf);
     return ret;
 }
 
@@ -254,6 +257,7 @@ static void ipmi_kcs_ioport_write(void *opaque, hwaddr addr, uint64_t val,
         return;
     }
 
+    ipmi_lock(s);
     switch (addr & 1) {
     case 0:
         kcs->data_in_reg = val;
@@ -265,6 +269,7 @@ static void ipmi_kcs_ioport_write(void *opaque, hwaddr addr, uint64_t val,
     }
     IPMI_KCS_SET_IBF(kcs->status_reg, 1);
     ipmi_signal(s);
+    ipmi_unlock(s);
 }
 
 const MemoryRegionOps ipmi_kcs_io_ops = {
