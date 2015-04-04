@@ -9,21 +9,10 @@
 
 #include "hw/i2c/i2c.h"
 
-struct I2CBus
-{
-    BusState qbus;
-    I2CSlave *current_dev;
-    I2CSlave *dev;
-    uint8_t saved_address;
-};
-
 static Property i2c_props[] = {
     DEFINE_PROP_UINT8("address", struct I2CSlave, address, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
-
-#define TYPE_I2C_BUS "i2c-bus"
-#define I2C_BUS(obj) OBJECT_CHECK(I2CBus, (obj), TYPE_I2C_BUS)
 
 static const TypeInfo i2c_bus_info = {
     .name = TYPE_I2C_BUS,
