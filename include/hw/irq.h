@@ -62,4 +62,9 @@ qemu_irq *qemu_irq_proxy(qemu_irq **target, int n);
    on an existing vector of qemu_irq.  */
 void qemu_irq_intercept_in(qemu_irq *gpio_in, qemu_irq_handler handler, int n);
 
+/* Allow an irq to be named so it can be found and used from another
+   driver. */
+void qemu_name_irq(qemu_irq irq, const char *name);
+qemu_irq qemu_find_named_irq(const char *name);
+
 #endif

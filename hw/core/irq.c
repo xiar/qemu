@@ -24,6 +24,7 @@
 #include "qemu-common.h"
 #include "hw/irq.h"
 #include "qom/object.h"
+#include "qemu/queue.h"
 
 #define IRQ(obj) OBJECT_CHECK(struct IRQState, (obj), TYPE_IRQ)
 
@@ -33,6 +34,10 @@ struct IRQState {
     qemu_irq_handler handler;
     void *opaque;
     int n;
+
+    /* Keep a list of named irqs. */
+    const char *name;
+    QSLIST_ENTRY(IRQState) name_link;
 };
 
 void qemu_set_irq(qemu_irq irq, int level)
@@ -142,6 +147,33 @@ void qemu_irq_intercept_in(qemu_irq *gpio_in, qemu_irq_handler handler, int n)
         gpio_in[i]->handler = handler;
         gpio_in[i]->opaque = &old_irqs[i];
     }
+}
+
+static QSLIST_HEAD(, IRQState) named_irqs;
+
+void qemu_name_irq(qemu_irq irq, const char *name)
+{
+    if (irq->name) {
+	fprintf(stderr, "IRQ %d is already named %s, attempted rename to %s\n",
+		irq->n, irq->name, name);
+	return;
+    }
+
+    irq->name = name;
+    QSLIST_INSERT_HEAD(&named_irqs, irq, name_link);
+}
+
+qemu_irq qemu_find_named_irq(const char *name)
+{
+    qemu_irq irq;
+
+    QSLIST_FOREACH(irq, &named_irqs, name_link) {
+	if (strcmp(name, irq->name) == 0) {
+	    return irq;
+	}
+    }
+
+    return NULL;
 }
 
 static const TypeInfo irq_type_info = {
