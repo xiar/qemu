@@ -45,6 +45,9 @@ typedef struct IPMISMBusInterface {
      * sure that the response matches the command.
      */
     uint8_t waiting_rsp;
+
+    char *alertname;
+    SMBusAlertEntry alert_entry;
 } IPMISMBusInterface;
 
 static void ipmi_smbus_handle_event(IPMIInterface *s)
@@ -63,6 +66,7 @@ static void ipmi_smbus_handle_rsp(IPMIInterface *intf, uint8_t msg_id,
         memcpy(intf->outmsg, rsp, rsp_len);
         intf->outlen = rsp_len;
         intf->outpos = 0;
+        smbus_do_alert(smbus->alertname, &smbus->alert_entry);
     }
 }
 
@@ -118,6 +122,7 @@ typedef struct SMBusIPMIDevice {
     CharDriverState *chr;
     IPMIInterface *intf;
     IPMIFwInfo fwinfo;
+    char *alertname;
 } SMBusIPMIDevice;
 
 static void ipmi_quick_cmd(SMBusDevice *dev, uint8_t read)
@@ -192,6 +197,7 @@ static int smbus_ipmi_initfn(SMBusDevice *dev)
     SMBusIPMIDevice *ipmi = (SMBusIPMIDevice *) dev;
     Object *intfobj;
     IPMIInterface *intf;
+    IPMISMBusInterface *smbus;
     Object *bmcobj;
     IPMIBmc *bmc;
     Error *err = NULL;
@@ -205,9 +211,12 @@ static int smbus_ipmi_initfn(SMBusDevice *dev)
     bmc->chr = ipmi->chr;
     intfobj = object_new(TYPE_IPMI_INTERFACE_SMBUS);
     intf = IPMI_INTERFACE(intfobj);
+    smbus = IPMI_INTERFACE_SMBUS(intf);
     bmc->intf = intf;
     intf->bmc = bmc;
     intf->threaded_bmc = ipmi->threaded_bmc;
+    smbus->alertname = ipmi->alertname;
+    smbus->alert_entry.val = ipmi->smbusdev.i2c.address << 1;
     ipmi_interface_init(intf, &err);
     if (err) {
         goto out_err;
@@ -250,6 +259,7 @@ static Property smbus_ipmi_properties[] = {
     DEFINE_PROP_UINT8("slave_addr", SMBusIPMIDevice, slave_addr,  0),
     DEFINE_PROP_CHR("chardev",  SMBusIPMIDevice, chr),
     DEFINE_PROP_BOOL("threadbmc",  SMBusIPMIDevice, threaded_bmc, false),
+    DEFINE_PROP_STRING("alertname", SMBusIPMIDevice, alertname),
     DEFINE_PROP_END_OF_LIST(),
 };
 
