@@ -26,6 +26,7 @@
  */
 
 #include "hw/i2c/i2c.h"
+#include "qemu/queue.h"
 
 #define TYPE_SMBUS_DEVICE "smbus-device"
 #define SMBUS_DEVICE(obj) \
@@ -80,5 +81,15 @@ int smbus_write_block(I2CBus *bus, uint8_t addr, uint8_t command, uint8_t *data,
 
 void smbus_eeprom_init(I2CBus *smbus, int nb_eeprom,
                        const uint8_t *eeprom_spd, int size);
+
+typedef struct SMBusAlertEntry {
+    uint8_t val;
+
+    /* Internal use */
+    bool enqueued;
+    QSIMPLEQ_ENTRY(SMBusAlertEntry) link;
+} SMBusAlertEntry;
+
+void smbus_do_alert(char *name, SMBusAlertEntry *alert);
 
 #endif
