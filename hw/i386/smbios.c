@@ -790,6 +790,7 @@ void smbios_set_defaults(const char *manufacturer, const char *product,
         }
     } else {
         g_free(smbios_entries);
+        smbios_entries = NULL;
     }
 
     SMBIOS_SET_DEFAULT(type1.manufacturer, manufacturer);
@@ -868,7 +869,7 @@ static void smbios_table_entry_append(void *data, int size, bool append_zeros)
     header = (struct smbios_structure_header *)(smbios_tables +
                                                 smbios_tables_len);
 
-    memcpy(header, data, size);
+    memcpy(header, data, append_zeros ? size - 2 : size);
     if (append_zeros) {
         memset(smbios_tables + smbios_tables_len + size - 2, 0, 2);
     }
