@@ -933,10 +933,10 @@ void smbios_entry_add(QemuOpts *opts)
                 next++;
             next += 2;
 
-            if (header->type == 38) {
-                buf = next;
-                continue;
-            }
+            //if (header->type == 38) {
+            //    buf = next;
+            //    continue;
+            //}
 
             if (header->type == 1 && qemu_uuid_set) {
                 smbios_encode_uuid((struct smbios_uuid *)(buf + 8), qemu_uuid);
