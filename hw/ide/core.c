@@ -192,6 +192,9 @@ static void ide_identify(IDEState *s)
         put_le16(p + 169, 1); /* TRIM support */
     }
 
+    /* Set Nominal Media Rotation Rate*/
+    put_le16(p + 217, s->rotation);
+
     ide_identify_size(s);
     s->identify_set = 1;
 

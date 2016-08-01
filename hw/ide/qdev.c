@@ -150,12 +150,14 @@ int ide_get_bios_chs_trans(BusState *bus, int unit)
 
 typedef struct IDEDrive {
     IDEDevice dev;
+    uint32_t rotation;
 } IDEDrive;
 
 static int ide_dev_initfn(IDEDevice *dev, IDEDriveKind kind)
 {
     IDEBus *bus = DO_UPCAST(IDEBus, qbus, dev->qdev.parent_bus);
     IDEState *s = bus->ifs + dev->unit;
+    IDEDrive *ide_drive = NULL;
     Error *err = NULL;
 
     if (dev->conf.discard_granularity == -1) {
@@ -179,6 +181,11 @@ static int ide_dev_initfn(IDEDevice *dev, IDEDriveKind kind)
             error_report_err(err);
             return -1;
         }
+    }
+    
+    if (kind == IDE_HD) {
+        ide_drive = DO_UPCAST(IDEDrive, dev, dev);
+        s->rotation = ide_drive->rotation;
     }
 
     if (ide_init_drive(s, dev->conf.blk, kind,
@@ -266,7 +273,8 @@ static int ide_drive_initfn(IDEDevice *dev)
     DEFINE_PROP_STRING("ver",  IDEDrive, dev.version),  \
     DEFINE_PROP_UINT64("wwn",  IDEDrive, dev.wwn, 0),    \
     DEFINE_PROP_STRING("serial",  IDEDrive, dev.serial),\
-    DEFINE_PROP_STRING("model", IDEDrive, dev.model)
+    DEFINE_PROP_STRING("model", IDEDrive, dev.model),   \
+    DEFINE_PROP_UINT32("rotation", IDEDrive, rotation, 7200)
 
 static Property ide_hd_properties[] = {
     DEFINE_IDE_DEV_PROPERTIES(),

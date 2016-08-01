@@ -369,6 +369,8 @@ struct IDEState {
     char drive_serial_str[21];
     char drive_model_str[41];
     uint64_t wwn;
+    uint32_t rotation;
+
     /* ide regs */
     uint8_t feature;
     uint8_t error;
