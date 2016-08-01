@@ -938,6 +938,10 @@ void smbios_entry_add(QemuOpts *opts)
                 continue;
             }
 
+            if (header->type == 1 && qemu_uuid_set) {
+                smbios_encode_uuid((struct smbios_uuid *)(buf + 8), qemu_uuid);
+            }
+
             e_size = next - buf;
             /*
              * NOTE: standard double '\0' terminator expected, per smbios spec.
