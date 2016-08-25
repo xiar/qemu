@@ -728,6 +728,36 @@ static int scsi_disk_emulate_inquiry(SCSIRequest *req, uint8_t *outbuf)
             outbuf[43] = max_io_sectors & 0xff;
             break;
         }
+        case 0xb1: /* Block Device Characteristics */
+        {
+            if (s->qdev.type == TYPE_ROM) {
+                DPRINTF("Inquiry (EVPD[%02X]) not supported for CDROM\n",
+                        page_code);
+                return -1;
+            }
+
+            buflen = 64;
+            memset(outbuf + 4, 0 , buflen - 4);
+
+            /* Medium Rotation Rate */
+            /* 0000h - Medium Rotation Rate is not supported */
+            /* 0001h - Non-rotating Medium */
+            /* 0002h to 0400h - Reserved */
+            /* 0401h to FFFEh - Nominal meidum rotation rate in rpm */
+            outbuf[4] = (s->rotation >> 8) & 0xff;
+            outbuf[5] = s->rotation & 0xff;
+            outbuf[6] = 0x0;
+
+            /* Nominal form factor */
+            /* 0h - nominal form factore is not reported */
+            /* 1h - 5.25inch, 2h - 3.5inch, 3h - 2.5inch */
+            /* 4h - 1.8inch, 5h - less than 1.8inch*/
+            /* All others - Reserved */
+            outbuf[7] = 0x3;
+
+            memset(outbuf + 8, 52, buflen - 8);
+            break;
+        }
         case 0xb2: /* thin provisioning */
         {
             buflen = 8;
