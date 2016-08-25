@@ -104,6 +104,7 @@ struct SCSIDevice
     QTAILQ_HEAD(, SCSIRequest) requests;
     uint32_t channel;
     uint32_t lun;
+    uint32_t slot_number;
     int blocksize;
     int type;
     uint64_t max_lba;

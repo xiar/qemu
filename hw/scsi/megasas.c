@@ -971,7 +971,7 @@ static int megasas_dcmd_pd_get_list(MegasasState *s, MegasasCmd *cmd)
         info.addr[num_pd_disks].device_id = cpu_to_le16(pd_id);
         info.addr[num_pd_disks].encl_device_id = 0xFFFF;
         info.addr[num_pd_disks].encl_index = 0;
-        info.addr[num_pd_disks].slot_number = sdev->id & 0xFF;
+        info.addr[num_pd_disks].slot_number = sdev->slot_number;
         info.addr[num_pd_disks].scsi_dev_type = sdev->type;
         info.addr[num_pd_disks].connect_port_bitmap = 0x1;
         info.addr[num_pd_disks].sas_addr[0] =
@@ -1073,7 +1073,7 @@ static int megasas_pd_get_info_submit(SCSIDevice *sdev, int lun,
     info->non_coerced_size = cpu_to_le64(pd_size);
     info->coerced_size = cpu_to_le64(pd_size);
     info->encl_device_id = 0xFFFF;
-    info->slot_number = (sdev->id & 0xFF);
+    info->slot_number = sdev->slot_number;
     info->path_info.count = 1;
     info->path_info.sas_addr[0] =
         cpu_to_le64(megasas_get_sata_addr(pd_id));

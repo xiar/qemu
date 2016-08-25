@@ -2869,6 +2869,7 @@ static Property scsi_hd_properties[] = {
                        DEFAULT_MAX_IO_SIZE),
     DEFINE_BLOCK_CHS_PROPERTIES(SCSIDiskState, qdev.conf),
     DEFINE_PROP_UINT32("rotation", SCSIDiskState, rotation, 7200),
+    DEFINE_PROP_UINT32("slot_number", SCSIDiskState, qdev.slot_number, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
 
