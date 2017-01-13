@@ -6,6 +6,7 @@ common-obj-$(CONFIG_MEGASAS_SCSI_PCI) += megasas.o
 common-obj-$(CONFIG_VMW_PVSCSI_SCSI_PCI) += vmw_pvscsi.o
 common-obj-$(CONFIG_ESP) += esp.o
 common-obj-$(CONFIG_ESP_PCI) += esp-pci.o
+common-obj-$(CONFIG_MPT3SAS_SCSI_PCI) += mpt3sas.o
 obj-$(CONFIG_PSERIES) += spapr_vscsi.o
 
 ifeq ($(CONFIG_VIRTIO),y)
