@@ -174,7 +174,7 @@ static void mpt3sas_handle_ioc_facts(MPT3SASState *s,Mpi2IOCFactsRequest_t *req)
     reply.VP_ID = req->VP_ID;
     reply.VF_ID = req->VF_ID;
     reply.IOCExceptions = 0x1FF; //Report all errors.
-    reply.IOCStatus = 0;
+    reply.IOCStatus = MPI2_IOCSTATUS_SUCCESS;
     reply.IOCLogInfo = 0;
     reply.MaxChainDepth = MPT3SAS_MAX_CHAIN_DEPTH;
     reply.WhoInit = s->who_init;
@@ -184,7 +184,7 @@ static void mpt3sas_handle_ioc_facts(MPT3SASState *s,Mpi2IOCFactsRequest_t *req)
     reply.ProductID = MPT3SAS_LSI3008_PRODUCT_ID;
     reply.IOCCapabilities = 0x0; //TODO
     //reply.FWVersion = 0x20000000;
-    reply.IOCRequestFrameSize = 128; //TODO
+    reply.IOCRequestFrameSize = 2048; //TODO
     reply.IOCMaxChainSegmentSize = 0;
     reply.MaxInitiators = 1;
     reply.MaxTargets = s->max_devices;
@@ -192,7 +192,7 @@ static void mpt3sas_handle_ioc_facts(MPT3SASState *s,Mpi2IOCFactsRequest_t *req)
     reply.MaxEnclosures = 0x1;
     reply.ProtocolFlags = MPI2_IOCFACTS_PROTOCOL_SCSI_INITIATOR | MPI2_IOCFACTS_PROTOCOL_SCSI_TARGET;
     reply.HighPriorityCredit = 64; //TODO
-    reply.MaxReplyDescriptorPostQueueDepth = 32; //TODO
+    reply.MaxReplyDescriptorPostQueueDepth = 8192; //TODO
     reply.ReplyFrameSize = 128; //TODO
     reply.MaxVolumes = 0x0; //TODO
     reply.MaxDevHandle = s->max_devices;
@@ -205,7 +205,25 @@ static void mpt3sas_handle_ioc_facts(MPT3SASState *s,Mpi2IOCFactsRequest_t *req)
 
 static void mpt3sas_handle_port_facts(MPT3SASState *s, Mpi2PortFactsRequest_t *req)
 {
+
     DPRINTF("---------------- Handle PORT FACTS\n");
+    Mpi2PortFactsReply_t reply;
+
+    memset(&reply, 0, sizeof(reply));
+    reply.MsgLength = sizeof(reply) / 4;
+    reply.Function = req->Function;
+    reply.PortNumber = req->PortNumber;
+    reply.MsgFlags = req->MsgFlags;
+    reply.VP_ID = req->VP_ID;
+    reply.VF_ID = req->VF_ID;
+    reply.IOCStatus = MPI2_IOCSTATUS_SUCCESS;
+    reply.IOCLogInfo = 0x0;
+    if (req->PortNumber < MPT3SAS_NUM_PORTS) {
+        reply.PortType = MPI2_PORTFACTS_PORTTYPE_SAS_PHYSICAL;
+        reply.MaxPostedCmdBuffers = 128; //TODO
+    }
+
+    mpt3sas_reply(s, (MPI2DefaultReply_t *)&reply);
 }
 
 static void mpt3sas_handle_message(MPT3SASState *s, MPI2RequestHeader_t *req)
@@ -277,7 +295,8 @@ static uint32_t mpt3sas_doorbell_read(MPT3SASState *s)
             DPRINTF("%s:%d doorbell reply index %d, doorbell reply size: 0x%x\n", __func__, __LINE__, s->doorbell_reply_idx, s->doorbell_reply_size);
             retval |= MPI2_DOORBELL_USED;
             if (s->doorbell_reply_idx < s->doorbell_reply_size) {
-                retval |= le16_to_cpu(s->doorbell_reply[s->doorbell_reply_idx++]);
+                //retval |= le16_to_cpu(s->doorbell_reply[s->doorbell_reply_idx++]);
+                retval |= s->doorbell_reply[s->doorbell_reply_idx++];
             }
             break;
         default:
@@ -311,12 +330,12 @@ static void mpt3sas_doorbell_write(MPT3SASState *s, uint32_t val)
             s->doorbell_state = DOORBELL_WRITE;
             s->doorbell_idx = 0;
             s->doorbell_cnt = (val & MPI2_DOORBELL_ADD_DWORDS_MASK) >> MPI2_DOORBELL_ADD_DWORDS_SHIFT;
-            s->intr_status |= MPI2_HIS_IOC2SYS_DB_STATUS; //IO2CTOSYS
+            s->intr_status |= MPI2_HIS_IOC2SYS_DB_STATUS; 
             DPRINTF("%s HANDSHAKE function,doorbell count %d, doorbell state %d\n", __func__, s->doorbell_cnt, s->doorbell_state);
             mpt3sas_update_interrupt(s);
             break;
         default:
-            DPRINTF("%s unhandled doorbell function 0x%x\n", __func__, function);
+            DPRINTF("%s ****** unhandled doorbell function 0x%x\n", __func__, function);
             break;
     }
 }
