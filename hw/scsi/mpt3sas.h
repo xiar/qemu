@@ -2,6 +2,11 @@
 #define __MPT3SAS_H__
 
 #define MPT3SAS_NUM_PORTS   8
+
+#define MPT3SAS_MAX_CHAIN_DEPTH     64
+#define MPT3SAS_MAX_MSIX_VECTORS    8
+#define MPT3SAS_MAX_OUTSTANDING_REQUESTS    64 //max outstanding requests held by driver
+
 typedef struct MPT3SASState MPT3SASState;
 
 enum {

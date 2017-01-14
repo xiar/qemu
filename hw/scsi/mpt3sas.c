@@ -13,6 +13,8 @@
 #include "hw/scsi/mpi/mpi2_type.h"
 #include "hw/scsi/mpi/mpi2.h"
 #include "hw/scsi/mpi/mpi2_cnfg.h"
+#include "hw/scsi/mpi/mpi2_init.h"
+#include "hw/scsi/mpi/mpi2_ioc.h"
 
 #include "trace/control.h"
 #include "qemu/log.h"
@@ -21,6 +23,11 @@
 #define IEEE_COMPANY_LOCALLY_ASSIGNED 0x525400
 
 #define TYPE_MPT3SAS3008   "lsisas3008"
+
+#define MPT3SAS_LSI3008_PRODUCT_ID  \
+    (MPI25_FW_HEADER_PID_FAMILY_3108_SAS |   \
+     MPI2_FW_HEADER_PID_PROD_TARGET_INITIATOR_SCSI |    \
+     MPI2_FW_HEADER_PID_TYPE_SAS)
 
 #define MPT3SAS(obj) \
     OBJECT_CHECK(MPT3SASState, (obj), TYPE_MPT3SAS3008)
@@ -35,6 +42,19 @@ static uint32_t ioc_reset_sequence[] = {
     MPI2_WRSEQ_4TH_KEY_VALUE,
     MPI2_WRSEQ_5TH_KEY_VALUE,
     MPI2_WRSEQ_6TH_KEY_VALUE};
+
+static const int mpi2_request_sizes[] = {
+    [MPI2_FUNCTION_SCSI_IO_REQUEST]     = sizeof(Mpi2SCSIIORequest_t),
+    [MPI2_FUNCTION_SCSI_TASK_MGMT]      = sizeof(Mpi2IOCFactsRequest_t),
+    [MPI2_FUNCTION_IOC_INIT]            = sizeof(Mpi2IOCInitRequest_t),
+    [MPI2_FUNCTION_CONFIG]              = sizeof(Mpi2ConfigRequest_t),
+    [MPI2_FUNCTION_PORT_FACTS]          = sizeof(Mpi2PortFactsRequest_t),
+    [MPI2_FUNCTION_PORT_ENABLE]         = sizeof(Mpi2PortEnableRequest_t),
+    [MPI2_FUNCTION_EVENT_NOTIFICATION]  = sizeof(Mpi2EventNotificationRequest_t),
+    [MPI2_FUNCTION_EVENT_ACK]           = sizeof(Mpi2EventAckRequest_t),
+    [MPI2_FUNCTION_FW_DOWNLOAD]         = sizeof(Mpi2FWDownloadRequest),
+    //[MPI2_FUNCTION_TARGET_ASSIST]       = sizeof(Mpi2TargetAssistRequest_t),
+};
 #if 0
 static inline void trace_mpt3sas_all(const char *fmt, ...)
 {
@@ -89,21 +109,26 @@ static void mpt3sas_update_interrupt(MPT3SASState *s)
 {
     PCIDevice *pci =(PCIDevice *)s;
     
-    uint32_t state = s->intr_status & ~(s->intr_mask | MPI2_HIS_IOP_DOORBELL_STATUS);
-    DPRINTF("%s interrupt state 0x%x\n", __func__, state);
+    //uint32_t state = s->intr_status & ~(s->intr_mask | MPI2_HIS_IOP_DOORBELL_STATUS);
+    uint32_t state = s->intr_status & ~(s->intr_mask | MPI2_HIS_SYS2IOC_DB_STATUS);
+    //DPRINTF("%s interrupt state 0x%x\n", __func__, state);
     pci_set_irq(pci, !!state);
 }
 
 static void mpt3sas_interrupt_status_write(MPT3SASState *s)
 {
+//    DPRINTF("%s:%d doorbell state %d\n", __func__, __LINE__, s->doorbell_state);
     switch (s->doorbell_state) {
         case DOORBELL_NONE:
         case DOORBELL_WRITE:
-            s->intr_status &= ~MPI2_HIS_DOORBELL_INTERRUPT;
+            //s->intr_status &= ~MPI2_HIS_DOORBELL_INTERRUPT;
+            s->intr_status &= ~MPI2_HIS_IOC2SYS_DB_STATUS;
             break;
         case DOORBELL_READ:
-            assert(s->intr_status & MPI2_HIS_DOORBELL_INTERRUPT);
+            //assert(s->intr_status & MPI2_HIS_DOORBELL_INTERRUPT);
+            assert(s->intr_status & MPI2_HIS_IOC2SYS_DB_STATUS);
             if (s->doorbell_reply_idx == s->doorbell_reply_size) {
+                DPRINTF("%s:%d Change doorbell state from %d to DOOBELL_NONE\n", __func__, __LINE__, s->doorbell_state);
                 s->doorbell_state = DOORBELL_NONE;
             }
             break;
@@ -111,21 +136,99 @@ static void mpt3sas_interrupt_status_write(MPT3SASState *s)
             abort();
     }
 
+ //   DPRINTF("%s:%d doorbell state %d\n", __func__, __LINE__, s->doorbell_state);
     mpt3sas_update_interrupt(s);
 }
 
-static void mpt3sas_process_message(MPT3SASState *s, uint32_t *msg)
+static void mpt3sas_set_fault(MPT3SASState *s, uint32_t code)
+{
+    if ((s->state & MPI2_IOC_STATE_FAULT) == 0)
+        s->state = MPI2_IOC_STATE_FAULT | code;
+}
+
+static void mpt3sas_reply(MPT3SASState *s, MPI2DefaultReply_t *reply)
+{
+    if (s->doorbell_state == DOORBELL_WRITE) {
+        DPRINTF("%s:%d Change doorbell state from DOORBELL_WRITE to DOORBELL_READ\n", __func__, __LINE__);
+        s->doorbell_state = DOORBELL_READ;
+        s->doorbell_reply_idx = 0;
+        s->doorbell_reply_size = reply->MsgLength * 2;
+        memcpy(s->doorbell_reply, reply, s->doorbell_reply_size * 2);
+        s->intr_status |= MPI2_HIS_IOC2SYS_DB_STATUS;
+        mpt3sas_update_interrupt(s);
+    }
+}
+
+static void mpt3sas_handle_ioc_facts(MPT3SASState *s,Mpi2IOCFactsRequest_t *req)
+{
+    Mpi2IOCFactsReply_t reply;
+
+    DPRINTF("----------> Handle IOC FACTS.\n");
+    memset(&reply, 0, sizeof(reply));
+    reply.MsgVersion = 0x0205;
+    reply.MsgLength = sizeof(reply) / 4;
+    reply.Function = req->Function;
+    reply.HeaderVersion = 0x2a00;
+    reply.IOCNumber = 1;
+    reply.MsgFlags = req->MsgFlags;
+    reply.VP_ID = req->VP_ID;
+    reply.VF_ID = req->VF_ID;
+    reply.IOCExceptions = 0x1FF; //Report all errors.
+    reply.IOCStatus = 0;
+    reply.IOCLogInfo = 0;
+    reply.MaxChainDepth = MPT3SAS_MAX_CHAIN_DEPTH;
+    reply.WhoInit = s->who_init;
+    reply.NumberOfPorts = MPT3SAS_NUM_PORTS;
+    reply.MaxMSIxVectors = MPT3SAS_MAX_MSIX_VECTORS;
+    reply.RequestCredit = MPT3SAS_MAX_OUTSTANDING_REQUESTS;
+    reply.ProductID = MPT3SAS_LSI3008_PRODUCT_ID;
+    reply.IOCCapabilities = 0x0; //TODO
+    //reply.FWVersion = 0x20000000;
+    reply.IOCRequestFrameSize = 128; //TODO
+    reply.IOCMaxChainSegmentSize = 0;
+    reply.MaxInitiators = 1;
+    reply.MaxTargets = s->max_devices;
+    reply.MaxSasExpanders = 0x1;
+    reply.MaxEnclosures = 0x1;
+    reply.ProtocolFlags = MPI2_IOCFACTS_PROTOCOL_SCSI_INITIATOR | MPI2_IOCFACTS_PROTOCOL_SCSI_TARGET;
+    reply.HighPriorityCredit = 64; //TODO
+    reply.MaxReplyDescriptorPostQueueDepth = 32; //TODO
+    reply.ReplyFrameSize = 128; //TODO
+    reply.MaxVolumes = 0x0; //TODO
+    reply.MaxDevHandle = s->max_devices;
+    reply.MaxPersistentEntries = 0x0; //TODO
+    reply.CurrentHostPageSize = 0x0; //TODO
+
+    mpt3sas_reply(s, (MPI2DefaultReply_t *)&reply);
+}
+
+
+static void mpt3sas_handle_port_facts(MPT3SASState *s, Mpi2PortFactsRequest_t *req)
+{
+    DPRINTF("---------------- Handle PORT FACTS\n");
+}
+
+static void mpt3sas_handle_message(MPT3SASState *s, MPI2RequestHeader_t *req)
 {
     uint8_t i = 0;
 
-    DPRINTF("----DOORBELL MESSAGE-------");
+    uint32_t *msg = (uint32_t *)req;
+    DPRINTF("----DOORBELL MESSAGE-------\n");
+    qemu_log_mask(LOG_TRACE, "\toffset:data\n");
     for (i = 0; i < s->doorbell_cnt; i++) {
-        DPRINTF("0x%08x ", s->doorbell_msg[i]);
-        if (i % 4 ==0) {
-            DPRINTF("\n");
-        }
+        qemu_log_mask(LOG_TRACE, "\t[0x%02x]:%08x\n", i*4, le32_to_cpu(msg[i]));
     }
-    DPRINTF("\n");
+    switch (req->Function) {
+        case MPI2_FUNCTION_IOC_FACTS:
+            mpt3sas_handle_ioc_facts(s, (Mpi2IOCFactsRequest_t *)req);
+            break;
+        case MPI2_FUNCTION_PORT_FACTS:
+            mpt3sas_handle_port_facts(s, (Mpi2PortFactsRequest_t *)req);
+            break;
+        default:
+            mpt3sas_set_fault(s, MPI2_IOCSTATUS_INVALID_FUNCTION);
+            break;
+    }
 }
 
 static void mpt3sas_soft_reset(MPT3SASState *s)
@@ -144,19 +247,15 @@ static void mpt3sas_soft_reset(MPT3SASState *s)
     s->state = MPI2_IOC_STATE_READY;
 }
 
-static void __attribute__((unused)) mpt3sas_hard_reset(MPT3SASState *s)
+static void mpt3sas_hard_reset(MPT3SASState *s)
 {
+    s->state = MPI2_IOC_STATE_RESET;
     mpt3sas_soft_reset(s);
     s->intr_mask = MPI2_HIM_RESET_IRQ_MASK | MPI2_HIM_DIM | MPI2_HIM_DIM;
     s->max_devices = MPT3SAS_NUM_PORTS;
     s->max_buses = 1;
 }
 
-static void __attribute__((unused)) mpt3sas_diag_reset(MPT3SASState *s)
-{
-}
-//DOORBELL READ/WRITE
-//
 static uint32_t mpt3sas_doorbell_read(MPT3SASState *s)
 {
     uint32_t retval = 0;
@@ -172,9 +271,10 @@ static uint32_t mpt3sas_doorbell_read(MPT3SASState *s)
             break;
         case DOORBELL_READ:
             retval &= ~MPI2_DOORBELL_DATA_MASK;
-            assert(s->intr_status & MPI2_HIS_DOORBELL_INTERRUPT);
+            assert(s->intr_status & MPI2_HIS_IOC2SYS_DB_STATUS);
             assert(s->doorbell_reply_idx <=s->doorbell_reply_size);
 
+            DPRINTF("%s:%d doorbell reply index %d, doorbell reply size: 0x%x\n", __func__, __LINE__, s->doorbell_reply_idx, s->doorbell_reply_size);
             retval |= MPI2_DOORBELL_USED;
             if (s->doorbell_reply_idx < s->doorbell_reply_size) {
                 retval |= le16_to_cpu(s->doorbell_reply[s->doorbell_reply_idx++]);
@@ -192,12 +292,14 @@ static void mpt3sas_doorbell_write(MPT3SASState *s, uint32_t val)
     uint8_t function;
 
     if (s->doorbell_state == DOORBELL_WRITE) {
+        DPRINTF("%s:%d Request in doorbell val 0x%x, doorbell index %d\n", __func__, __LINE__, val, s->doorbell_idx);
         if (s->doorbell_idx < s->doorbell_cnt) {
             s->doorbell_msg[s->doorbell_idx++] = cpu_to_le32(val);
             if (s->doorbell_idx == s->doorbell_cnt) {
-                mpt3sas_process_message(s, &s->doorbell_msg[0]);
+                mpt3sas_handle_message(s, (MPI2RequestHeader_t *)s->doorbell_msg);
             }
         }
+        return;
     }
 
     function = (val & MPI2_DOORBELL_FUNCTION_MASK) >> MPI2_DOORBELL_FUNCTION_SHIFT;
@@ -209,7 +311,8 @@ static void mpt3sas_doorbell_write(MPT3SASState *s, uint32_t val)
             s->doorbell_state = DOORBELL_WRITE;
             s->doorbell_idx = 0;
             s->doorbell_cnt = (val & MPI2_DOORBELL_ADD_DWORDS_MASK) >> MPI2_DOORBELL_ADD_DWORDS_SHIFT;
-            s->intr_status |= MPI2_HIS_DOORBELL_INTERRUPT;
+            s->intr_status |= MPI2_HIS_IOC2SYS_DB_STATUS; //IO2CTOSYS
+            DPRINTF("%s HANDSHAKE function,doorbell count %d, doorbell state %d\n", __func__, s->doorbell_cnt, s->doorbell_state);
             mpt3sas_update_interrupt(s);
             break;
         default:
@@ -225,7 +328,6 @@ static uint64_t mpt3sas_mmio_read(void *opaque, hwaddr addr,
     uint32_t ret = 0;
 
     MPT3SASState *s = opaque;
-    DPRINTF("MPT3SASState %p\n", s);
 
 
     DPRINTF("%s:%d Read register [ %s ], size = %d\n", __func__, __LINE__,
@@ -386,30 +488,30 @@ static const MemoryRegionOps mpt3sas_port_ops = {
     }
 };
 
-static uint64_t mpt3sas_diag_read(void *opaque, hwaddr addr,
-        unsigned size)
-{
-    DPRINTF("%s:%d addr = 0x%lx, size = %d\n", __func__, __LINE__,
-            addr, size);
-    return 0;
-}
-
-static void mpt3sas_diag_write(void *opaque, hwaddr addr,
-        uint64_t val, unsigned size)
-{
-    DPRINTF("%s:%d addr = 0x%lx, val = 0x%lx, size = %d\n", __func__, __LINE__,
-            addr, val, size);
-}
-
-static const MemoryRegionOps mpt3sas_diag_ops = {
-    .read = mpt3sas_diag_read,
-    .write = mpt3sas_diag_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .impl = {
-        .min_access_size = 4,
-        .max_access_size = 4,
-    }
-};
+//static uint64_t mpt3sas_diag_read(void *opaque, hwaddr addr,
+//        unsigned size)
+//{
+//    DPRINTF("%s:%d addr = 0x%lx, size = %d\n", __func__, __LINE__,
+//            addr, size);
+//    return 0;
+//}
+//
+//static void mpt3sas_diag_write(void *opaque, hwaddr addr,
+//        uint64_t val, unsigned size)
+//{
+//    DPRINTF("%s:%d addr = 0x%lx, val = 0x%lx, size = %d\n", __func__, __LINE__,
+//            addr, val, size);
+//}
+//
+//static const MemoryRegionOps mpt3sas_diag_ops = {
+//    .read = mpt3sas_diag_read,
+//    .write = mpt3sas_diag_write,
+//    .endianness = DEVICE_LITTLE_ENDIAN,
+//    .impl = {
+//        .min_access_size = 4,
+//        .max_access_size = 4,
+//    }
+//};
 
 static QEMUSGList *mpt3sas_get_sg_list(SCSIRequest *sreq)
 {
@@ -463,8 +565,8 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
             "mpt3sas-mmio", 0x10000);
     memory_region_init_io(&s->port_io, OBJECT(s), &mpt3sas_port_ops, s,
             "mpt3sas-io", 256);
-    memory_region_init_io(&s->diag_io, OBJECT(s), &mpt3sas_diag_ops, s,
-            "mpt3sas-diag", 0x10000);
+//    memory_region_init_io(&s->diag_io, OBJECT(s), &mpt3sas_diag_ops, s,
+//            "mpt3sas-diag", 0x10000);
 
     // nentries - 15 ??
     // table_bar_nr 0x1
@@ -512,6 +614,9 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
     if (!d->hotplugged) {
         scsi_bus_legacy_handle_cmdline(&s->bus, errp);
     }
+
+    // Do the hardreset
+    mpt3sas_hard_reset(s);
 }
 
 static void mpt3sas_scsi_uninit(PCIDevice *dev)
