@@ -51,6 +51,22 @@ struct MPT3SASState {
     
     uint32_t hcb_size;
 
+    uint32_t reply_free_host_index;
+    uint32_t reply_post_host_index;
+    hwaddr request_descriptor_post;
+
+    // host configured settings
+    uint8_t host_page_size;
+    uint8_t host_msix_vectors;
+    uint16_t system_request_frame_size;
+    uint16_t reply_descriptor_post_queue_depth;
+    uint16_t reply_free_queue_depth;
+    hwaddr sense_buffer_address_hi;
+    hwaddr system_reply_address_hi;
+    hwaddr system_request_frame_base_address;
+    hwaddr reply_descriptor_post_queue_address;
+    hwaddr reply_free_queue_address;
+    uint64_t time_stamp;
     SCSIBus bus;
 };
 

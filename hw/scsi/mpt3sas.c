@@ -202,10 +202,8 @@ static void mpt3sas_handle_ioc_facts(MPT3SASState *s,Mpi2IOCFactsRequest_t *req)
     mpt3sas_reply(s, (MPI2DefaultReply_t *)&reply);
 }
 
-
 static void mpt3sas_handle_port_facts(MPT3SASState *s, Mpi2PortFactsRequest_t *req)
 {
-
     DPRINTF("---------------- Handle PORT FACTS\n");
     Mpi2PortFactsReply_t reply;
 
@@ -226,6 +224,55 @@ static void mpt3sas_handle_port_facts(MPT3SASState *s, Mpi2PortFactsRequest_t *r
     mpt3sas_reply(s, (MPI2DefaultReply_t *)&reply);
 }
 
+static void mpt3sas_handle_ioc_init(MPT3SASState *s, Mpi2IOCInitRequest_t *req)
+{
+    Mpi2IOCInitReply_t reply;
+    DPRINTF("---------------- Handle IOC INIT\n");
+
+    s->who_init = req->WhoInit;
+    s->host_page_size = req->HostPageSize;
+    s->host_msix_vectors = req->HostMSIxVectors;
+    s->system_request_frame_size = req->SystemRequestFrameSize;
+    s->reply_descriptor_post_queue_depth = req->ReplyDescriptorPostQueueAddress;
+    s->reply_free_queue_depth = req->ReplyFreeQueueDepth;
+    s->sense_buffer_address_hi = (hwaddr)req->SenseBufferAddressHigh;
+    s->system_reply_address_hi = (hwaddr)req->SystemReplyAddressHigh;
+    s->system_request_frame_base_address = (hwaddr)req->SystemRequestFrameBaseAddress;
+    s->reply_descriptor_post_queue_address = (hwaddr)req->ReplyDescriptorPostQueueAddress;
+    s->reply_free_queue_address = (hwaddr)req->ReplyFreeQueueAddress;
+
+    if (s->state == MPI2_IOC_STATE_READY) {
+        s->state = MPI2_IOC_STATE_OPERATIONAL;
+    }
+
+    memset(&reply, 0, sizeof(reply));
+    reply.WhoInit = s->who_init;
+    reply.MsgLength = sizeof(reply) / 4;
+    reply.Function = req->Function;
+    reply.MsgFlags = req->MsgFlags;
+    reply.VP_ID = req->VP_ID;
+    reply.VF_ID = req->VF_ID;
+    reply.IOCStatus = MPI2_IOCSTATUS_SUCCESS;
+    reply.IOCLogInfo = 0x0;
+    
+    mpt3sas_reply(s, (MPI2DefaultReply_t *)&reply);
+}
+
+//static void mpt3sas_handle_event_notification(MPT3SASState *s, Mpi2EventNotificationRequest_t *req)
+//{
+//    DPRINTF("---------------> Handle EVENT NOTIFICATION \n");
+//    Mpi2EventNotificationReply_t reply;
+//
+//    memset(&reply, 0, sizeof(reply));
+//    reply.EventDataLength = sizeof(reply.EventData) / 4;
+//    reply.MsgLength = sizeof(reply) / 4;
+//    reply.Function = req->Function;
+//    reply.MsgFlags = req->MsgFlags;
+//    reply.Event = MPI2_EVENT_EVENT_CHANGE;
+//
+//    mpt3sas_reply(s, (MPI2DefaultReply_t *)&reply);
+//}
+
 static void mpt3sas_handle_message(MPT3SASState *s, MPI2RequestHeader_t *req)
 {
     uint8_t i = 0;
@@ -237,13 +284,38 @@ static void mpt3sas_handle_message(MPT3SASState *s, MPI2RequestHeader_t *req)
         qemu_log_mask(LOG_TRACE, "\t[0x%02x]:%08x\n", i*4, le32_to_cpu(msg[i]));
     }
     switch (req->Function) {
+        case MPI2_FUNCTION_SCSI_IO_REQUEST:
+            DPRINTF("** NOT IMPLEMENTED SCSI_IO_REQUEST **\n");
+            break;
+        case MPI2_FUNCTION_SCSI_TASK_MGMT:
+            DPRINTF("** NOT IMPLEMENTED SCSI_TASK_MGMT **\n");
+            break;
+        case MPI2_FUNCTION_IOC_INIT:
+            mpt3sas_handle_ioc_init(s, (Mpi2IOCInitRequest_t *)req);
+            break;
+        case MPI2_FUNCTION_CONFIG:
+            DPRINTF("** NOT IMPLEMENTED CONFIG **\n");
+            break;
         case MPI2_FUNCTION_IOC_FACTS:
             mpt3sas_handle_ioc_facts(s, (Mpi2IOCFactsRequest_t *)req);
             break;
         case MPI2_FUNCTION_PORT_FACTS:
             mpt3sas_handle_port_facts(s, (Mpi2PortFactsRequest_t *)req);
             break;
+        case MPI2_FUNCTION_PORT_ENABLE:
+            DPRINTF("** NOT IMPLEMENTED PORT_ENABLE **\n");
+            break;
+       // case MPI2_FUNCTION_EVENT_NOTIFICATION:
+       //     mpt3sas_handle_event_notification(s, (Mpi2EventNotificationRequest_t *)req);
+       //     break;
+        case MPI2_FUNCTION_EVENT_ACK:
+            DPRINTF("** NOT IMPLEMENTED EVENT_ACK **\n");
+            break;
+        case MPI2_FUNCTION_FW_DOWNLOAD:
+            DPRINTF("** NOT IMPLEMENTED FW_DOWNLOAD **\n");
+            break;
         default:
+            DPRINTF("** UNSUPPORTED FUNCTION: 0x%x ** \n", req->Function);
             mpt3sas_set_fault(s, MPI2_IOCSTATUS_INVALID_FUNCTION);
             break;
     }
@@ -454,8 +526,10 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
         case MPI2_DCR_ADDRESS_OFFSET:
             break;
         case MPI2_REPLY_FREE_HOST_INDEX_OFFSET:
+            s->reply_free_host_index = val;
             break;
         case MPI2_REPLY_POST_HOST_INDEX_OFFSET:
+            s->reply_post_host_index = val;
             break;
         case MPI25_SUP_REPLY_POST_HOST_INDEX_OFFSET:
             break;
@@ -475,8 +549,10 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
         case MPI26_SCRATCHPAD3_OFFSET:
             break;
         case MPI2_REQUEST_DESCRIPTOR_POST_LOW_OFFSET:
+            s->request_descriptor_post = (hwaddr)(val & 0xffffffff);
             break;
         case MPI2_REQUEST_DESCRIPTOR_POST_HIGH_OFFSET:
+            s->request_descriptor_post |= (val & 0xffffffff) << 32;
             break;
         case MPI26_ATOMIC_REQUEST_DESCRIPTOR_POST_OFFSET:
             break;
