@@ -265,20 +265,20 @@ static void mpt3sas_handle_ioc_init(MPT3SASState *s, Mpi2IOCInitRequest_t *req)
     mpt3sas_reply(s, (MPI2DefaultReply_t *)&reply);
 }
 
-//static void mpt3sas_handle_event_notification(MPT3SASState *s, Mpi2EventNotificationRequest_t *req)
-//{
-//    DPRINTF("---------------> Handle EVENT NOTIFICATION \n");
-//    Mpi2EventNotificationReply_t reply;
-//
-//    memset(&reply, 0, sizeof(reply));
-//    reply.EventDataLength = sizeof(reply.EventData) / 4;
-//    reply.MsgLength = sizeof(reply) / 4;
-//    reply.Function = req->Function;
-//    reply.MsgFlags = req->MsgFlags;
-//    reply.Event = MPI2_EVENT_EVENT_CHANGE;
-//
-//    mpt3sas_reply(s, (MPI2DefaultReply_t *)&reply);
-//}
+static void mpt3sas_handle_event_notification(MPT3SASState *s, Mpi2EventNotificationRequest_t *req)
+{
+  DPRINTF("---------------> Handle EVENT NOTIFICATION \n");
+    Mpi2EventNotificationReply_t reply;
+
+    memset(&reply, 0, sizeof(reply));
+    reply.EventDataLength = sizeof(reply.EventData) / 4;
+    reply.MsgLength = sizeof(reply) / 4;
+    reply.Function = req->Function;
+    reply.MsgFlags = req->MsgFlags;
+    reply.Event = MPI2_EVENT_EVENT_CHANGE;
+
+    mpt3sas_reply(s, (MPI2DefaultReply_t *)&reply);
+}
 
 static void mpt3sas_handle_message(MPT3SASState *s, MPI2RequestHeader_t *req)
 {
@@ -312,13 +312,14 @@ static void mpt3sas_handle_message(MPT3SASState *s, MPI2RequestHeader_t *req)
         case MPI2_FUNCTION_PORT_ENABLE:
             DPRINTF("** NOT IMPLEMENTED PORT_ENABLE **\n");
             break;
-       // case MPI2_FUNCTION_EVENT_NOTIFICATION:
-       //     mpt3sas_handle_event_notification(s, (Mpi2EventNotificationRequest_t *)req);
-       //     break;
+        case MPI2_FUNCTION_EVENT_NOTIFICATION:
+            mpt3sas_handle_event_notification(s, (Mpi2EventNotificationRequest_t *)req);
+            break;
         case MPI2_FUNCTION_EVENT_ACK:
             DPRINTF("** NOT IMPLEMENTED EVENT_ACK **\n");
             break;
         case MPI2_FUNCTION_FW_DOWNLOAD:
+            
             DPRINTF("** NOT IMPLEMENTED FW_DOWNLOAD **\n");
             break;
         default:
@@ -340,6 +341,13 @@ static void mpt3sas_soft_reset(MPT3SASState *s)
     qbus_reset_all(&s->bus.qbus);
     s->intr_status = 0;
     s->intr_mask = save_mask;
+    s->reply_free_ioc_index = 0;
+    s->reply_free_host_index = 0;
+    s->reply_post_ioc_index = 0;
+    s->reply_post_host_index = 0;
+
+    s->request_descriptor_post_head = 0;
+    s->request_descriptor_post_tail = 0;
 
     s->state = MPI2_IOC_STATE_READY;
 }
@@ -351,6 +359,59 @@ static void mpt3sas_hard_reset(MPT3SASState *s)
     s->intr_mask = MPI2_HIM_RESET_IRQ_MASK | MPI2_HIM_DIM | MPI2_HIM_DIM;
     s->max_devices = MPT3SAS_NUM_PORTS;
     s->max_buses = 1;
+}
+
+static void mpt3sas_fetch_request(MPT3SASState *s)
+{
+    PCIDevice *pci = (PCIDevice *)s;
+    char req[MPT3SAS_MAX_REQUEST_SIZE];
+    MPI2RequestHeader_t *hdr = (MPI2RequestHeader_t *)req;
+    hwaddr addr;
+    //int size;
+    uint64_t mpi_request_descriptor = 0;
+    uint8_t request_flags = 0;
+    uint8_t msix_index = 0;
+    uint16_t smid = 0;
+    uint32_t i = 0;
+
+    mpi_request_descriptor = s->request_descriptor_post[s->request_descriptor_post_head++];
+    request_flags = mpi_request_descriptor & 0xff;
+    msix_index = (mpi_request_descriptor >> 8) & 0xff;
+    smid = (mpi_request_descriptor >> 16) & 0xffff;
+    DPRINTF("MPI REQUEST DESCRIPTOR: 0x%lx\n", mpi_request_descriptor);
+    DPRINTF("Request Flags: 0x%x\n", request_flags);
+    DPRINTF("MSIx Index: 0x%x\n", msix_index);
+    DPRINTF("SMID: 0x%04x\n", smid);
+    //DPRINTF("LMID: 0x%04x\n", (uint16_t)((mpi_request_descriptor >> 24) & 0xffff));
+    addr = s->system_request_frame_base_address + (s->system_request_frame_size * 4) * smid;
+
+    // Read request header from system request message frames queue
+    pci_dma_read(pci, addr, req, sizeof(MPI2RequestHeader_t));
+    DPRINTF("Request header:\n");
+    DPRINTF("-------------------\n");
+    for (i = 0; i < sizeof(MPI2RequestHeader_t); i++) {
+        if (i != 0 && i % 8 == 0) {
+            qemu_log_mask(LOG_TRACE, "\n");
+        } else {
+            qemu_log_mask(LOG_TRACE, "%02x ", req[i]);
+        }
+    }
+    qemu_log_mask(LOG_TRACE, "\n");
+    DPRINTF("Header Function: 0x%x\n", hdr->Function);
+}
+
+static void mpt3sas_fetch_requests(void*opaque)
+{
+    MPT3SASState *s = opaque;
+
+    if (s->state != MPI2_IOC_STATE_OPERATIONAL) {
+        mpt3sas_set_fault(s, MPI2_IOCSTATUS_INVALID_STATE);
+        return;
+    }
+
+    while (s->request_descriptor_post_head != s->request_descriptor_post_tail) {
+        mpt3sas_fetch_request(s);
+    }
 }
 
 static uint32_t mpt3sas_doorbell_read(MPT3SASState *s)
@@ -427,10 +488,6 @@ static uint64_t mpt3sas_mmio_read(void *opaque, hwaddr addr,
 
     MPT3SASState *s = opaque;
 
-
-    DPRINTF("%s:%d Read register [ %s ], size = %d\n", __func__, __LINE__,
-            register_description[addr & ~3], size);
-
     switch (addr & ~3) {
         case MPI2_DOORBELL_OFFSET:
             ret = mpt3sas_doorbell_read(s);
@@ -481,7 +538,8 @@ static uint64_t mpt3sas_mmio_read(void *opaque, hwaddr addr,
               DPRINTF("%s:%d Unknown offset 0x%lx\n", __func__, __LINE__, addr & ~3);
               break;
     }
-    DPRINTF("%s:%d Register [ %s ] returned value 0x%x\n", __func__, __LINE__, register_description[addr & ~3], ret);
+    DPRINTF("%s:%d Read register [ %s ], size = %d, returned value 0x%x\n", __func__, __LINE__,
+            register_description[addr & ~3], size, ret);
     return ret;
 }
 
@@ -556,11 +614,22 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
         case MPI26_SCRATCHPAD3_OFFSET:
             break;
         case MPI2_REQUEST_DESCRIPTOR_POST_LOW_OFFSET:
-            s->request_descriptor_post = (hwaddr)(val & 0xffffffff);
+        {
+            s->cur_rdp = (hwaddr)(val & 0xffffffff);
             break;
+        }
         case MPI2_REQUEST_DESCRIPTOR_POST_HIGH_OFFSET:
-            s->request_descriptor_post |= (val & 0xffffffff) << 32;
+        {
+            s->cur_rdp |= (val & 0xffffffff) << 32;
+            if (s->request_descriptor_post_head ==
+                (s->request_descriptor_post_tail + 1) % ARRAY_SIZE(s->request_descriptor_post)) {
+                mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
+            } else {
+                s->request_descriptor_post[s->request_descriptor_post_tail++] = cpu_to_le64(s->cur_rdp);
+                qemu_bh_schedule(s->request_bh);
+            }
             break;
+        }
         case MPI26_ATOMIC_REQUEST_DESCRIPTOR_POST_OFFSET:
             break;
         default:
@@ -710,6 +779,10 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
         s->sas_addr |= (PCI_SLOT(dev->devfn) << 8);
         s->sas_addr |= PCI_FUNC(dev->devfn);
     }
+
+    s->max_devices = MPT3SAS_NUM_PORTS;
+
+    s->request_bh = qemu_bh_new(mpt3sas_fetch_requests, s);
 
     scsi_bus_new(&s->bus, sizeof(s->bus), &dev->qdev, &mpt3sas_scsi_info, NULL);
 
