@@ -233,13 +233,20 @@ static void mpt3sas_handle_ioc_init(MPT3SASState *s, Mpi2IOCInitRequest_t *req)
     s->host_page_size = req->HostPageSize;
     s->host_msix_vectors = req->HostMSIxVectors;
     s->system_request_frame_size = req->SystemRequestFrameSize;
-    s->reply_descriptor_post_queue_depth = req->ReplyDescriptorPostQueueAddress;
+    s->reply_descriptor_post_queue_depth = req->ReplyDescriptorPostQueueDepth;
     s->reply_free_queue_depth = req->ReplyFreeQueueDepth;
     s->sense_buffer_address_hi = (hwaddr)req->SenseBufferAddressHigh;
     s->system_reply_address_hi = (hwaddr)req->SystemReplyAddressHigh;
     s->system_request_frame_base_address = (hwaddr)req->SystemRequestFrameBaseAddress;
     s->reply_descriptor_post_queue_address = (hwaddr)req->ReplyDescriptorPostQueueAddress;
     s->reply_free_queue_address = (hwaddr)req->ReplyFreeQueueAddress;
+
+    DPRINTF("System Request Frame Size: 0x%x\n", req->SystemRequestFrameSize);
+    DPRINTF("Reply Descriptor Post Queue Depth: %d\n", req->ReplyDescriptorPostQueueDepth);
+    DPRINTF("Reply Free Queue Depth: %d\n", req->ReplyFreeQueueDepth);
+    DPRINTF("System Request Frame Base Address 0x%lx\n", req->SystemRequestFrameBaseAddress);
+    DPRINTF("Reply Descriptor Post Queue Address 0x%lx\n", req->ReplyDescriptorPostQueueAddress);
+    DPRINTF("Reply Free Queue Address 0x%lx\n", req->ReplyFreeQueueAddress);
 
     if (s->state == MPI2_IOC_STATE_READY) {
         s->state = MPI2_IOC_STATE_OPERATIONAL;
