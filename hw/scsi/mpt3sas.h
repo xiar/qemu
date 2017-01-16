@@ -11,6 +11,7 @@
 #define MPT3SAS_REQUEST_QUEUE_DEPTH 128
 #define MPT3SAS_REPLY_QUEUE_DEPTH   128
 
+#define MPT3SAS_MAX_REPLY_SIZE      128
 
 typedef struct MPT3SASState MPT3SASState;
 
@@ -83,8 +84,8 @@ struct MPT3SASState {
     uint16_t system_request_frame_size;
     uint16_t reply_descriptor_post_queue_depth;
     uint16_t reply_free_queue_depth;
-    hwaddr sense_buffer_address_hi;
-    hwaddr system_reply_address_hi;
+    uint32_t sense_buffer_address_hi;
+    uint32_t system_reply_address_hi;
     hwaddr system_request_frame_base_address;
     hwaddr reply_descriptor_post_queue_address;
     hwaddr reply_free_queue_address;
