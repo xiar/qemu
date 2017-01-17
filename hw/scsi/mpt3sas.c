@@ -273,6 +273,8 @@ typedef struct MPT3SASConfigPage {
     size_t (*mpt_config_build)(MPT3SASState *s, uint8_t **data, int address);
 }MPT3SASConfigPage;
 
+//TODO: Most the config pages need to be configured again for making the host driver works.
+// currently just for make host linux driver initialization working
 static size_t mpt3sas_config_manufacturing_0(MPT3SASState *s, uint8_t **data, int address)
 {
     return MPT3SAS_CONFIG_PACK(0, MPI2_CONFIG_PAGETYPE_MANUFACTURING, 0x00,
@@ -292,32 +294,41 @@ static size_t mpt3sas_config_manufacturing_11(MPT3SASState *s, uint8_t **data, i
 
 static size_t mpt3sas_config_bios_2(MPT3SASState *s, uint8_t **data, int address)
 {
-    return 0;
+    return MPT3SAS_CONFIG_PACK(2, MPI2_CONFIG_PAGETYPE_BIOS, 0x00,
+            "*l*l*l*l*l*l*b*b*w*l*l*l*l*l*l*b*b*w*l*l*l*l*l*l*b*b*w");
 }
 
 static size_t mpt3sas_config_bios_3(MPT3SASState *s, uint8_t **data, int address)
 {
-    return 0;
+    return MPT3SAS_CONFIG_PACK(3, MPI2_CONFIG_PAGETYPE_BIOS, 0x00,
+            "*l*l*l*l*l*l*l*l*l*l*l");
 }
 
 static size_t mpt3sas_config_ioc_8(MPT3SASState *s, uint8_t **data, int address)
 {
-    return 0;
+    return MPT3SAS_CONFIG_PACK(8, MPI2_CONFIG_PAGETYPE_IOC, 0x00,
+            "*b*b*w*w*ww*w*w*w*l", 0);
 }
 
 static size_t mpt3sas_config_io_unit_0(MPT3SASState *s, uint8_t **data, int address)
 {
-    return 0;
+    PCIDevice *pci = PCI_DEVICE(s);
+    uint64_t unique_value = 0x53504D554D4553LL; 
+
+    unique_value |= (uint64_t)pci->devfn << 56;
+    return MPT3SAS_CONFIG_PACK(0, MPI2_CONFIG_PAGETYPE_IO_UNIT, 0x00,
+                              "q", unique_value);
 }
 
 static size_t mpt3sas_config_io_unit_1(MPT3SASState *s, uint8_t **data, int address)
 {
-    return 0;
+    return MPT3SAS_CONFIG_PACK(1, MPI2_CONFIG_PAGETYPE_IO_UNIT, 0x02, "l", 0x41);
 }
 
 static size_t mpt3sas_config_io_unit_8(MPT3SASState *s, uint8_t **data, int address)
 {
-    return 0;
+    return MPT3SAS_CONFIG_PACK(8, MPI2_CONFIG_PAGETYPE_IO_UNIT, 0x00,
+            "*l*lb*b*w", 8 /*TODO: number sensors*/);
 }
 
 static const MPT3SASConfigPage mpt3sas_config_pages[] = {
