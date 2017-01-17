@@ -286,8 +286,8 @@ static size_t mpt3sas_config_manufacturing_0(MPT3SASState *s, uint8_t **data, in
 
 static size_t mpt3sas_config_manufacturing_11(MPT3SASState *s, uint8_t **data, int address)
 {
-    return MPT3SAS_CONFIG_PACK(0, MPI2_CONFIG_PAGETYPE_MANUFACTURING, 0x00,
-            "wbbbb", 0, 0, 1, 0, 0);
+    return MPT3SAS_CONFIG_PACK(0xb, MPI2_CONFIG_PAGETYPE_MANUFACTURING, 0x00,
+            "*l*bb*b*b", 1);
 }
 
 static size_t mpt3sas_config_bios_2(MPT3SASState *s, uint8_t **data, int address)
@@ -692,20 +692,21 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, Mpi2ConfigRequ
         length = page->mpt_config_build(s, NULL, req->PageAddress);
         if ((ssize_t)length < 0) {
             reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_PAGE;
+            goto out;
         } else {
             reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_CANT_COMMIT;
+            goto done;
         }
-        goto out;
     }
 
     if (req->Action == MPI2_CONFIG_ACTION_PAGE_WRITE_CURRENT ||
         req->Action == MPI2_CONFIG_ACTION_PAGE_WRITE_NVRAM) {
         length = page->mpt_config_build(s, NULL, req->PageAddress);
-        if ((ssize_t)length < 0)
+        if ((ssize_t)length < 0) {
             reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_PAGE;
-        else
+        } else {
             reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_CANT_COMMIT;
-
+        }
         goto out;
     }
 
@@ -724,6 +725,7 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, Mpi2ConfigRequ
         length = page->mpt_config_build(s, NULL, req->PageAddress);
         if ((ssize_t)length < 0) {
             reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_PAGE;
+            goto out;
         } else {
             goto done;
         }
