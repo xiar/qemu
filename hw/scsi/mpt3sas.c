@@ -778,6 +778,21 @@ out:
     return ;
 }
 
+static void mpt3sas_handle_port_enable(MPT3SASState *s, uint16_t smid, Mpi2PortEnableRequest_t *req)
+{
+    DPRINTF("-----------> Handle PORT ENABLE\n");
+    Mpi2PortEnableReply_t reply;
+
+    memset(&reply, 0, sizeof(reply));
+    reply.MsgLength = sizeof(reply) / 4;
+    reply.Function = req->Function;
+    reply.PortFlags = req->PortFlags;
+    reply.VP_ID = req->VP_ID;
+    reply.VF_ID = req->VF_ID;
+
+    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, smid, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
+}
+
 static void mpt3sas_handle_message(MPT3SASState *s, MPI2RequestHeader_t *req)
 {
     uint8_t i = 0;
@@ -928,6 +943,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
         case MPI2_FUNCTION_SCSI_IO_REQUEST:
             break;
         case MPI2_FUNCTION_PORT_ENABLE:
+            mpt3sas_handle_port_enable(s, smid, (Mpi2PortEnableRequest_t *)req);
             break;
         case MPI2_FUNCTION_CONFIG:
             mpt3sas_handle_config(s, smid, (Mpi2ConfigRequest_t *)req);
