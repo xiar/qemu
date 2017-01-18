@@ -468,7 +468,12 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply,
         descriptor.AddressReply.ReplyFlags = reply_flags;
         descriptor.AddressReply.MSIxIndex = 0;
         descriptor.AddressReply.SMID = smid;
+        //descriptor.AddressReply.ReplyFrameAddress = cpu_to_le32(reply_address_lo);
         descriptor.AddressReply.ReplyFrameAddress = reply_address_lo;
+    } else if (reply_flags == MPI2_RPY_DESCRIPT_FLAGS_SCSI_IO_SUCCESS) {
+        //TODO:
+        DPRINTF("******TODO SCSI IO SUCCESS");
+        return;
     }
     //Write reply descriptor to reply post queue.1
     pci_dma_write(pci, s->reply_descriptor_post_queue_address + s->reply_post_ioc_index * sizeof(uint64_t), &descriptor, sizeof(descriptor));
@@ -793,6 +798,32 @@ static void mpt3sas_handle_port_enable(MPT3SASState *s, uint16_t smid, Mpi2PortE
     mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, smid, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
 }
 
+static void __attribute__((unused)) mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, Mpi2SCSIIORequest_t *req)
+{
+    DPRINTF("-----------> Handle SCSI IO REQUEST\n");
+    DPRINTF("DevHandle 0x%04x\n", req->DevHandle);
+    DPRINTF("ChainOffset 0x%x\n", req->ChainOffset);
+    DPRINTF("Function 0x%x\n", req->Function);
+    DPRINTF("SenseBufferLowAddress 0x%08x\n", req->SenseBufferLowAddress);
+    DPRINTF("SGLFlags 0x%04x\n", req->SGLFlags);
+    DPRINTF("SenseBufferLength 0x%02x\n", req->SenseBufferLength);
+    DPRINTF("SGLOffset0 0x%02x\n", req->SGLOffset0);
+    DPRINTF("SGLOffset1 0x%02x\n", req->SGLOffset1);
+    DPRINTF("SGLOffset2 0x%02x\n", req->SGLOffset2);
+    DPRINTF("SGLOffset3 0x%02x\n", req->SGLOffset3);
+    DPRINTF("SkipCount 0x%x\n", req->SkipCount);
+    DPRINTF("DataLength 0x%x\n", req->DataLength);
+    DPRINTF("BidirectionalDataLength 0x%x\n", req->BidirectionalDataLength);
+    DPRINTF("IoFlags 0x%x\n", req->IoFlags);
+    DPRINTF("EEDPFlags 0x%x\n", req->EEDPFlags);
+    DPRINTF("EEDPBlockSize 0x%x\n", req->EEDPBlockSize);
+    DPRINTF("SecondaryReferenceTag 0x%x\n", req->SecondaryReferenceTag);
+    DPRINTF("SecondaryApplicationTag 0x%x\n", req->SecondaryApplicationTag);
+    DPRINTF("ApplicationTagTranslationMask 0x%x\n", req->ApplicationTagTranslationMask);
+    DPRINTF("Control 0x%x\n", req->Control);
+    DPRINTF("Command: 0x%x\n", req->CDB.CDB32[0]);
+}
+
 static void mpt3sas_handle_message(MPT3SASState *s, MPI2RequestHeader_t *req)
 {
     uint8_t i = 0;
@@ -941,6 +972,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
             mpt3sas_handle_event_notification(s, smid, (Mpi2EventNotificationRequest_t *)req);
             break;
         case MPI2_FUNCTION_SCSI_IO_REQUEST:
+            mpt3sas_handle_scsi_io_request(s, smid, (Mpi2SCSIIORequest_t *)req);
             break;
         case MPI2_FUNCTION_PORT_ENABLE:
             mpt3sas_handle_port_enable(s, smid, (Mpi2PortEnableRequest_t *)req);
@@ -1148,6 +1180,10 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
             break;
         case MPI2_REPLY_POST_HOST_INDEX_OFFSET:
             s->reply_post_host_index = val;
+            
+            //clear ReplyDescriptorInterrupt
+            s->intr_status &= ~MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
+            mpt3sas_update_interrupt(s);
             break;
         case MPI25_SUP_REPLY_POST_HOST_INDEX_OFFSET:
             break;
@@ -1307,11 +1343,11 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
         DPRINTF("Initialize msix ok.\n");
         s->msix_in_use = true;
     }
-#endif
 
     if (pci_is_express(dev)) {
         pcie_endpoint_cap_init(dev, 0xa0);
     }
+#endif
 
     // bar0 for IO space, size: 256 bytes
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_IO, &s->port_io);
