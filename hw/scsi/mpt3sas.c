@@ -1298,12 +1298,16 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
     // pba_bar_nr 0x1
     // pba_offset 0x3800 ??
     // cap_pos 0x68 ??
+
+    //Disable msix now
+#if 0
     if (s->msix_available  &&
         !msix_init(dev, 15, &s->mmio_io, 0x1, 0x2000,
             &s->mmio_io, 0x1, 0x3800, 0x68)) {
         DPRINTF("Initialize msix ok.\n");
         s->msix_in_use = true;
     }
+#endif
 
     if (pci_is_express(dev)) {
         pcie_endpoint_cap_init(dev, 0xa0);
