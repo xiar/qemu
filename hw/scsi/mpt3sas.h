@@ -91,6 +91,7 @@ struct MPT3SASState {
     hwaddr reply_free_queue_address;
     uint64_t time_stamp;
 
+    bool send_sas_topology_change_list;
     SCSIBus bus;
 };
 
