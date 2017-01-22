@@ -1,6 +1,14 @@
 #ifndef __MPT3SAS_H__
 #define __MPT3SAS_H__
 
+#include "hw/scsi/mpi/mpi2_type.h"
+#include "hw/scsi/mpi/mpi2.h"
+#include "hw/scsi/mpi/mpi2_cnfg.h"
+#include "hw/scsi/mpi/mpi2_init.h"
+#include "hw/scsi/mpi/mpi2_ioc.h"
+#include "hw/scsi/mpi/mpi2_cnfg.h"
+#include "hw/scsi/mpi/mpi2_sas.h"
+
 #define MPT3SAS_NUM_PORTS   8
 
 #define MPT3SAS_MAX_CHAIN_DEPTH     64
@@ -92,6 +100,8 @@ struct MPT3SASState {
     uint64_t time_stamp;
 
     bool send_sas_topology_change_list;
+    uint16_t controller_dev_handle;
+    Mpi2SasIOUnitPage0_t sas_iounit_pg0;
     SCSIBus bus;
 };
 
