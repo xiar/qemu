@@ -106,11 +106,24 @@ typedef struct MPT3SASConfigPage {
     size_t (*mpt_config_build)(MPT3SASState *s, uint8_t **data, int address);
 }MPT3SASConfigPage;
 
+static uint8_t device_handle_to_phy(uint16_t dev_handle)
+{
+    if (dev_handle < MPT3SAS_NUM_PORTS + 1) {
+        DPRINTF("%s:%d Invalid device handle 0x%04x\n", __func__, __LINE__, dev_handle);
+        return 0;
+    }
+
+    return dev_handle - (MPT3SAS_NUM_PORTS) + 1;
+}
 static SCSIDevice *mpt3sas_phy_get_device(MPT3SASState *s, uint32_t i, uint16_t *dev_handle)
 {
     SCSIDevice *d = scsi_device_find(&s->bus, 0, i, 0);
     if (dev_handle) {
         *dev_handle = d? i + 1 + MPT3SAS_NUM_PORTS : 0;
+    }
+    if (d) {
+        DPRINTF("%s:%d Find SCSI device %p, Device Handle %d\n", __func__, __LINE__,
+                d, *dev_handle);
     }
     return d;
 }
@@ -293,8 +306,9 @@ static size_t mpt3sas_config_sas_io_unit_0(MPT3SASState *s, uint8_t **data, int 
     sas_iounit_pg0->NumPhys = MPT3SAS_NUM_PORTS;
 
     for (i = 0; i < MPT3SAS_NUM_PORTS; i++) {
-        uint16_t dev_handle;
+        uint16_t dev_handle = 0;
         SCSIDevice *dev = mpt3sas_phy_get_device(s, i, &dev_handle);
+
         sas_iounit_pg0->PhyData[i].Port = i;
         sas_iounit_pg0->PhyData[i].PortFlags = MPI2_SASIOUNIT0_PORTFLAGS_AUTO_PORT_CONFIG;
         sas_iounit_pg0->PhyData[i].PhyFlags = 0x0;
@@ -304,6 +318,7 @@ static size_t mpt3sas_config_sas_io_unit_0(MPT3SASState *s, uint8_t **data, int 
         sas_iounit_pg0->PhyData[i].AttachedDevHandle = dev ? dev_handle : 0x0;
         sas_iounit_pg0->PhyData[i].ControllerDevHandle = s->controller_dev_handle;
     }
+
     if (data) {
         *data = (uint8_t *)sas_iounit_pg0;
     } 
@@ -346,8 +361,19 @@ static size_t mpt3sas_config_sas_io_unit_1(MPT3SASState *s, uint8_t **data, int 
 static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int address)
 {
     Mpi2SasDevicePage0_t sas_device_pg0;
+    uint16_t handle;
+    uint8_t phy_id = 0;
 
     DPRINTF("++++> Handle SAS DEVICE PAGE 0.\n");
+    DPRINTF("%s:%d PageAddress 0x%x\n", __func__, __LINE__, address);
+    if ((address & MPI2_SAS_DEVICE_PGAD_FORM_MASK) == MPI2_SAS_DEVICE_PGAD_FORM_HANDLE) {
+        DPRINTF("This is SAS Device 0 PageAddress Format.\n");
+    }
+
+    handle = address & MPI2_SAS_DEVICE_PGAD_HANDLE_MASK;
+    DPRINTF("%s:%d Device Handle 0x%x\n", __func__, __LINE__, handle);
+
+    phy_id = device_handle_to_phy(handle);
     memset(&sas_device_pg0, 0, sizeof(sas_device_pg0));
     sas_device_pg0.Header.PageVersion = MPI2_SASDEVICE0_PAGEVERSION;
     sas_device_pg0.Header.PageNumber = 0x0;
@@ -355,6 +381,28 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
     sas_device_pg0.Header.ExtPageLength = sizeof(sas_device_pg0) / 4;
     sas_device_pg0.Header.ExtPageType = MPI2_CONFIG_EXTPAGETYPE_SAS_DEVICE;
     sas_device_pg0.Slot = 0;
+    sas_device_pg0.EnclosureHandle = 0x0; //ignore now.
+    if (handle == s->controller_dev_handle) {
+        sas_device_pg0.SASAddress = s->sas_address;
+    } else {
+        sas_device_pg0.SASAddress = s->sas_address + phy_id;
+    }
+    sas_device_pg0.ParentDevHandle = s->controller_dev_handle;
+    sas_device_pg0.PhyNum = phy_id;
+    sas_device_pg0.AccessStatus = MPI2_SAS_DEVICE0_ASTATUS_NO_ERRORS;
+    sas_device_pg0.DevHandle = handle;
+    if (handle == s->controller_dev_handle) {
+        sas_device_pg0.DeviceInfo = MPI2_SAS_DEVICE_INFO_SSP_INITIATOR;
+    } else {
+        sas_device_pg0.DeviceInfo = MPI2_SAS_DEVICE_INFO_SSP_TARGET | MPI2_SAS_DEVICE_INFO_END_DEVICE;
+    }
+
+    sas_device_pg0.Flags = handle > 0 ? MPI2_SAS_DEVICE0_FLAGS_DEVICE_PRESENT : 0x0 ;
+
+    if (data) {
+        *data = g_malloc(sizeof(sas_device_pg0));
+        memcpy(*data, &sas_device_pg0, sizeof(sas_device_pg0));
+    }
     return sizeof(sas_device_pg0);
 }
 
@@ -579,28 +627,27 @@ static void mpt3sas_event_sas_topology_change_list(MPT3SASState *s)
     Mpi2EventNotificationReply_t *reply = NULL;
     uint32_t event_data_length = 0;
 
-    event_data_length = sizeof(Mpi2EventDataSasTopologyChangeList_t) + sizeof(MPI2_EVENT_SAS_TOPO_PHY_ENTRY) * MPT3SAS_NUM_PORTS;
+    event_data_length = offsetof(Mpi2EventDataSasTopologyChangeList_t, PHY) + sizeof(MPI2_EVENT_SAS_TOPO_PHY_ENTRY) * MPT3SAS_NUM_PORTS;
 
-    //TODO: get attached scsi drive number.
-    stcl = malloc(event_data_length);
-
+    stcl = g_malloc(event_data_length);
     memset(stcl, 0, event_data_length);
     stcl->EnclosureHandle = 0x0;
     stcl->ExpanderDevHandle = 0x0;
     stcl->NumPhys = 0x0;
-    stcl->NumEntries = 0x2; //TODO
+    stcl->NumEntries = MPT3SAS_NUM_PORTS; //TODO
     stcl->StartPhyNum = 0x0;
-    stcl->ExpStatus =  MPI2_EVENT_SAS_TOPO_ES_NO_EXPANDER;
+    stcl->ExpStatus =  MPI2_EVENT_SAS_TOPO_ES_NO_EXPANDER; //Currently not support expander
     stcl->PhysicalPort = 0x0; //ignore
     for (i = 0; i < stcl->NumEntries; i++) {
-        uint16_t dev_handle;
+        uint16_t dev_handle = 0;
         SCSIDevice *dev = mpt3sas_phy_get_device(s, i, &dev_handle);
-        stcl->PHY[i].AttachedDevHandle = dev_handle ; //TODO
+
+        stcl->PHY[i].AttachedDevHandle = dev_handle ;
         stcl->PHY[i].LinkRate = dev ? MPI25_EVENT_SAS_TOPO_LR_RATE_12_0 << MPI2_EVENT_SAS_TOPO_LR_CURRENT_SHIFT : MPI2_EVENT_SAS_TOPO_LR_NEGOTIATION_FAILED;
-        stcl->PHY[i].PhyStatus = dev ? MPI2_EVENT_SAS_TOPO_RC_TARG_ADDED : MPI2_EVENT_SAS_TOPO_RC_TARG_NOT_RESPONDING;
+        stcl->PHY[i].PhyStatus = dev ? MPI2_EVENT_SAS_TOPO_RC_TARG_ADDED : MPI2_EVENT_SAS_TOPO_PHYSTATUS_VACANT | MPI2_EVENT_SAS_TOPO_RC_NO_CHANGE;
     }
 
-    reply = malloc(sizeof(Mpi2EventNotificationReply_t) + event_data_length);
+    reply = g_malloc(sizeof(Mpi2EventNotificationReply_t) + event_data_length);
     memset(reply, 0, sizeof(Mpi2EventNotificationReply_t) + event_data_length);
     reply->EventDataLength = event_data_length / 4;
     reply->AckRequired = 1;
@@ -1033,6 +1080,7 @@ static void mpt3sas_soft_reset(MPT3SASState *s)
 
     s->send_sas_topology_change_list = 0;
     s->controller_dev_handle = 0x1111;
+    s->sas_address = 0x55223344117788;
     s->state = MPI2_IOC_STATE_READY;
 }
 

@@ -102,6 +102,8 @@ struct MPT3SASState {
     bool send_sas_topology_change_list;
     uint16_t controller_dev_handle;
     Mpi2SasIOUnitPage0_t sas_iounit_pg0;
+
+    uint64_t sas_address;
     SCSIBus bus;
 };
 
