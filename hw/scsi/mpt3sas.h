@@ -29,6 +29,14 @@ enum {
     DOORBELL_READ
 };
 
+typedef struct MPT3SASRequest {
+    Mpi25SCSIIORequest_t scsi_io;
+    SCSIRequest *sreq;
+    QEMUSGList qsg;
+    MPT3SASState *dev;
+    QTAILQ_ENTRY(MPT3SASRequest) next;
+} MPT3SASRequest;
+
 struct MPT3SASState {
     PCIDevice dev;
     MemoryRegion mmio_io;
@@ -69,13 +77,13 @@ struct MPT3SASState {
     // Request queues
     //
 
-    uint32_t reply_free[MPT3SAS_REPLY_QUEUE_DEPTH + 1];
+    //uint32_t reply_free[MPT3SAS_REPLY_QUEUE_DEPTH + 1];
     //maintained by ioc internal, tracks the head of the reply queue,
     //the host maintained the tail of the reply queue.
     uint32_t reply_free_ioc_index;  // head of reply free queue
     uint32_t reply_free_host_index; // tail of reply free queue
 
-    uint32_t reply_post[MPT3SAS_REPLY_QUEUE_DEPTH + 1];
+    //uint32_t reply_post[MPT3SAS_REPLY_QUEUE_DEPTH + 1];
     uint32_t reply_post_ioc_index;  // tail of reply post queue
     uint32_t reply_post_host_index; // head of reply post queue
 
@@ -104,7 +112,9 @@ struct MPT3SASState {
     Mpi2SasIOUnitPage0_t sas_iounit_pg0;
 
     uint64_t sas_address;
+
     SCSIBus bus;
+    QTAILQ_HEAD(, MPT3SASRequest) pending;
 };
 
 #endif
