@@ -29,6 +29,12 @@ enum {
     DOORBELL_READ
 };
 
+typedef struct {
+    Notifier notifier;
+    MPT3SASState *s;
+    Mpi2SCSITaskManagementReply_t *reply;
+} MPT3SASCancelNotifier;
+
 typedef struct MPT3SASRequest {
     Mpi25SCSIIORequest_t scsi_io;
     SCSIRequest *sreq;
