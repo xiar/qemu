@@ -665,9 +665,7 @@ static void mpt3sas_reply(MPT3SASState *s, MPI2DefaultReply_t *reply)
         memcpy(s->doorbell_reply, reply, s->doorbell_reply_size * 2);
         s->intr_status |= MPI2_HIS_IOC2SYS_DB_STATUS;
         mpt3sas_update_interrupt(s);
-    }/* else {
-        mpt3sas_post_reply(s, reply);
-    }*/
+    }
 }
 
 static void mpt3sas_event_sas_topology_change_list(MPT3SASState *s)
@@ -1061,6 +1059,10 @@ static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr a
             addr = ldl_le_pci_dma(pci, sgaddr) |
                (hwaddr)ldl_le_pci_dma(pci, sgaddr + 4) << 32;
             len = ldl_le_pci_dma(pci, sgaddr + 8);
+            //if (!len) {
+            //    return MPI2_IOCSTATUS_INVALID_SGL;
+            //}
+
             DPRINTF("%s:%d: Adding SG Element, addr 0x%lx length 0x%lx\n",
                     __func__, __LINE__, addr, len);
             qemu_sglist_add(&req->qsg, addr, len);
@@ -1082,7 +1084,7 @@ static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr a
             next_chain_addr = sgaddr + chain_offset * sizeof(uint32_t) * 4;
         }
 
-        if (flags & MPI25_IEEE_SGE_FLAGS_END_OF_LIST)
+       if ((flags & 0xc0) ==  MPI25_IEEE_SGE_FLAGS_END_OF_LIST)
             break;
 
         len = MIN(len, left);
@@ -1139,6 +1141,7 @@ static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, Mpi25S
     QTAILQ_INSERT_TAIL(&s->pending, mpt3sas_req, next);
     mpt3sas_req->scsi_io = *req;
     mpt3sas_req->dev = s;
+    mpt3sas_req->smid = smid;
 
     chain_offset = req->ChainOffset;
     if (!chain_offset) {
@@ -1198,7 +1201,7 @@ bad:
     reply.VF_ID = req->VF_ID;
     reply.SCSIState = MPI2_SCSI_STATE_NO_SCSI_STATUS;
     reply.IOCStatus = status;
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, smid, MPI2_RPY_DESCRIPT_FLAGS_SCSI_IO_SUCCESS);
+    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, smid, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
     DPRINTF("ERROR. STATUS 0x%x\n", status);
     return 0;
 }
@@ -1683,6 +1686,67 @@ static QEMUSGList *mpt3sas_get_ieee_sg_list(SCSIRequest *sreq)
 static void mpt3sas_command_complete(SCSIRequest *sreq,
         uint32_t status, size_t resid)
 {
+    MPT3SASRequest *req = sreq->hba_private;
+    MPT3SASState *s = req->dev;
+    uint8_t sense_buf[SCSI_SENSE_BUF_SIZE];
+    uint8_t sense_len;
+
+    hwaddr sense_buffer_addr = (hwaddr)req->dev->sense_buffer_address_hi << 32 | req->scsi_io.SenseBufferLowAddress;
+
+    sense_len = scsi_req_get_sense(sreq, sense_buf, SCSI_SENSE_BUF_SIZE);
+    if (sense_len > 0) {
+        DPRINTF("%s:%d Got sense len %d\n", __func__, __LINE__, sense_len);
+        DPRINTF("%s:%d Sense Code: 0x%02x, SK/ASC/ASCQ: %02x/%02x/%02x\n", __func__, __LINE__,
+                sense_buf[0] & 0x7f, sense_buf[1] & 0xf, sense_buf[2], sense_buf[3]);
+        pci_dma_write(PCI_DEVICE(s), sense_buffer_addr, sense_buf,
+                MIN(req->scsi_io.SenseBufferLength, sense_len));
+    }
+
+    if (sreq->status != GOOD || resid || req->dev->doorbell_state == DOORBELL_WRITE) {
+        Mpi2SCSIIOReply_t reply;
+
+        memset(&reply, 0, sizeof(reply));
+        reply.DevHandle = req->scsi_io.DevHandle;
+        reply.MsgLength = sizeof(reply) / 4;
+        reply.Function = req->scsi_io.Function;
+        reply.MsgFlags = req->scsi_io.MsgFlags;
+        reply.VP_ID = req->scsi_io.VP_ID;
+        reply.VF_ID = req->scsi_io.VF_ID;
+        reply.SCSIStatus = sreq->status;
+        reply.TaskTag = 0; //TODO
+        if (sreq->status == GOOD) {
+            reply.TransferCount = req->scsi_io.DataLength - resid;
+            if (resid) {
+                reply.IOCStatus = MPI2_IOCSTATUS_SCSI_DATA_UNDERRUN;
+            }
+        } else {
+            reply.SCSIState = MPI2_SCSI_STATE_AUTOSENSE_VALID;
+            reply.SenseCount = sense_len;
+            reply.IOCStatus = MPI2_IOCSTATUS_SCSI_DATA_UNDERRUN;
+        }
+
+        DPRINTF("%s:%d Command (0x%02x) completed with errors. SMID 0x%x, status 0x%x\n",
+                __func__, __LINE__, req->scsi_io.CDB.CDB32[0], req->smid, sreq->status);
+        mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, req->smid, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
+    } else {
+        Mpi2SCSIIOReply_t reply;
+
+        memset(&reply, 0, sizeof(reply));
+        reply.DevHandle = req->scsi_io.DevHandle;
+        reply.MsgLength = sizeof(reply) / 4;
+        reply.Function = req->scsi_io.Function;
+        reply.MsgFlags = req->scsi_io.MsgFlags;
+        reply.VP_ID = req->scsi_io.VP_ID;
+        reply.VF_ID = req->scsi_io.VF_ID;
+        reply.SCSIStatus = sreq->status;
+        reply.TaskTag = 0; //TODO
+        reply.TransferCount = req->scsi_io.DataLength;
+        DPRINTF("%s:%d Command(0x%02x) completed successfully.\n",
+                __func__, __LINE__, req->scsi_io.CDB.CDB32[0]);
+        mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, req->smid, MPI2_RPY_DESCRIPT_FLAGS_SCSI_IO_SUCCESS);
+    }
+    
+    mpt3sas_free_request(req);
 }
 
 static void mpt3sas_request_cancelled(SCSIRequest *sreq)

@@ -34,6 +34,7 @@ typedef struct MPT3SASRequest {
     SCSIRequest *sreq;
     QEMUSGList qsg;
     MPT3SASState *dev;
+    uint16_t smid; //copy of request smid
     QTAILQ_ENTRY(MPT3SASRequest) next;
 } MPT3SASRequest;
 
