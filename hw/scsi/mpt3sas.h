@@ -51,6 +51,9 @@ struct MPT3SASState {
     MemoryRegion diag_io;
     QEMUBH *request_bh;
 
+    QEMUBH *event_handler;
+    uint16_t event;
+
     uint32_t max_devices;
     uint32_t max_buses;
 
@@ -82,15 +85,12 @@ struct MPT3SASState {
     uint32_t hcb_size;
 
     // Request queues
-    //
 
-    //uint32_t reply_free[MPT3SAS_REPLY_QUEUE_DEPTH + 1];
     //maintained by ioc internal, tracks the head of the reply queue,
     //the host maintained the tail of the reply queue.
     uint32_t reply_free_ioc_index;  // head of reply free queue
     uint32_t reply_free_host_index; // tail of reply free queue
 
-    //uint32_t reply_post[MPT3SAS_REPLY_QUEUE_DEPTH + 1];
     uint32_t reply_post_ioc_index;  // tail of reply post queue
     uint32_t reply_post_host_index; // head of reply post queue
 
@@ -114,7 +114,7 @@ struct MPT3SASState {
     hwaddr reply_free_queue_address;
     uint64_t time_stamp;
 
-    bool send_sas_topology_change_list;
+    // internal use
     uint16_t controller_dev_handle;
     Mpi2SasIOUnitPage0_t sas_iounit_pg0;
 
