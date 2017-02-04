@@ -1087,7 +1087,7 @@ static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr a
     uint32_t sglen = 0;
 
 
-    pci_dma_sglist_init(&req->qsg, pci, 4);
+    pci_dma_sglist_init(&req->qsg, pci, 1);
     for (;;) {
         uint8_t flags;
         dma_addr_t addr, len = 0;
@@ -1778,8 +1778,8 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
             break;
         case MPI2_REPLY_FREE_HOST_INDEX_OFFSET:
             s->reply_free_host_index = val;
-            s->intr_status &= ~MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
-            mpt3sas_update_interrupt(s);
+            //s->intr_status &= ~MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
+            //mpt3sas_update_interrupt(s);
             break;
         case MPI2_REPLY_POST_HOST_INDEX_OFFSET:
             s->reply_post_host_index = val;

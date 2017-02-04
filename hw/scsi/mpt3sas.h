@@ -11,12 +11,12 @@
 
 #define MPT3SAS_NUM_PORTS   8
 
-#define MPT3SAS_MAX_CHAIN_DEPTH     64
+#define MPT3SAS_MAX_CHAIN_DEPTH     128
 #define MPT3SAS_MAX_MSIX_VECTORS    8
-#define MPT3SAS_MAX_OUTSTANDING_REQUESTS    64 //max outstanding requests held by driver
+#define MPT3SAS_MAX_OUTSTANDING_REQUESTS    256 //max outstanding requests held by driver
 
 #define MPT3SAS_MAX_REQUEST_SIZE    2048
-#define MPT3SAS_REQUEST_QUEUE_DEPTH 128
+#define MPT3SAS_REQUEST_QUEUE_DEPTH 256
 #define MPT3SAS_REPLY_QUEUE_DEPTH   128
 
 #define MPT3SAS_MAX_REPLY_SIZE      128
