@@ -556,8 +556,23 @@ static void mpt3sas_update_interrupt(MPT3SASState *s)
     
     //uint32_t state = s->intr_status & ~(s->intr_mask | MPI2_HIS_IOP_DOORBELL_STATUS);
     uint32_t state = s->intr_status & ~(s->intr_mask | MPI2_HIS_SYS2IOC_DB_STATUS);
+
     DPRINTF("%s:%d interrupt state 0x%x\n", __func__, __LINE__, state);
     pci_set_irq(pci, !!state);
+}
+
+static void mpt3sas_clear_reply_descriptor_int(MPT3SASState *s)
+{
+    if (s->reply_post_host_index == s->reply_post_ioc_index) {
+        DPRINTF("%s:%d Clear interrupt. %02x/%02x(host/ioc)\n", __func__, __LINE__,
+                s->reply_post_host_index, s->reply_post_ioc_index);
+        // host reply post queue is empty
+        if (s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT) {
+            s->intr_status &= ~MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
+            smp_wmb();
+            mpt3sas_update_interrupt(s);
+        }
+    }
 }
 
 static void mpt3sas_interrupt_status_write(MPT3SASState *s)
@@ -669,6 +684,7 @@ static void mpt3sas_reply(MPT3SASState *s, MPI2DefaultReply_t *reply)
         s->doorbell_reply_size = reply->MsgLength * 2;
         memcpy(s->doorbell_reply, reply, s->doorbell_reply_size * 2);
         s->intr_status |= MPI2_HIS_IOC2SYS_DB_STATUS;
+        smp_wmb();
         mpt3sas_update_interrupt(s);
     }
 }
@@ -1021,7 +1037,7 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, Mpi2ConfigRequ
 
     //DUMP CONFIG DATA
     //
-    {
+    if (0){
         uint8_t i = 0;
         for (i = 0; i < length; i++) {
             if (i && (i % 8) == 0) {
@@ -1283,7 +1299,7 @@ bad:
     reply.Reserved3 = smid;
     mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
     DPRINTF("ERROR. STATUS 0x%x\n", status);
-    return 0;
+    return status;
 }
 
 static void mpt3sas_handle_event_ack(MPT3SASState *s, uint16_t smid, Mpi2EventAckRequest_t *req)
@@ -1493,7 +1509,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
     int size;
     uint64_t mpi_request_descriptor = 0;
     uint8_t request_flags = 0;
-    uint8_t msix_index = 0;
+    //uint8_t msix_index = 0;
     uint16_t smid = 0;
 
     DPRINTF("\n");
@@ -1502,7 +1518,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
     mpi_request_descriptor = s->request_descriptor_post[s->request_descriptor_post_head++];
     s->request_descriptor_post_head %= ARRAY_SIZE(s->request_descriptor_post);
     request_flags = mpi_request_descriptor & 0xff;
-    msix_index = (mpi_request_descriptor >> 8) & 0xff;
+    //msix_index = (mpi_request_descriptor >> 8) & 0xff;
     smid = (mpi_request_descriptor >> 16) & 0xffff;
     DPRINTF("REQUEST DESCRIPTOR POST Register: 0x%lx\n", mpi_request_descriptor);
     DPRINTF("Request Flags: 0x%x\n", request_flags);
@@ -1527,7 +1543,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
             break;
 
     }
-    DPRINTF("MSIx Index: 0x%x\n", msix_index);
+    //DPRINTF("MSIx Index: 0x%x\n", msix_index);
     DPRINTF("SMID: 0x%04x\n", smid);
     DPRINTF("LMID: 0x%04x\n", (uint16_t)((mpi_request_descriptor >> 24) & 0xffff));
     addr = s->system_request_frame_base_address + (s->system_request_frame_size * 4) * smid;
@@ -1562,7 +1578,9 @@ static void mpt3sas_handle_request(MPT3SASState *s)
             mpt3sas_handle_event_notification(s, smid, (Mpi2EventNotificationRequest_t *)req);
             break;
         case MPI2_FUNCTION_SCSI_IO_REQUEST:
-            mpt3sas_handle_scsi_io_request(s, smid, (Mpi25SCSIIORequest_t *)req, addr);
+            if (mpt3sas_handle_scsi_io_request(s, smid, (Mpi25SCSIIORequest_t *)req, addr)) {
+                DPRINTF("%s:%d Failed to handle scsi io request.\n", __func__, __LINE__);
+            }
             break;
         case MPI2_FUNCTION_PORT_ENABLE:
             mpt3sas_handle_port_enable(s, smid, (Mpi2PortEnableRequest_t *)req);
@@ -1778,18 +1796,11 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
             break;
         case MPI2_REPLY_FREE_HOST_INDEX_OFFSET:
             s->reply_free_host_index = val;
-            //s->intr_status &= ~MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
-            //mpt3sas_update_interrupt(s);
             break;
         case MPI2_REPLY_POST_HOST_INDEX_OFFSET:
-            s->reply_post_host_index = val;
-            
+            s->reply_post_host_index = val & MPI2_REPLY_POST_HOST_INDEX_MASK;
             //clear ReplyDescriptorInterrupt
-            if (s->reply_post_host_index == s->reply_post_ioc_index) {
-                // host reply post queue is empty
-                s->intr_status &= ~MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
-                mpt3sas_update_interrupt(s);
-            }
+            mpt3sas_clear_reply_descriptor_int(s);
             break;
         case MPI25_SUP_REPLY_POST_HOST_INDEX_OFFSET:
             break;
@@ -1810,23 +1821,21 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
             break;
         case MPI2_REQUEST_DESCRIPTOR_POST_LOW_OFFSET:
         {
-            s->cur_rdp = (hwaddr)(val & 0xffffffff);
-            break;
-        }
-        case MPI2_REQUEST_DESCRIPTOR_POST_HIGH_OFFSET:
-        {
-            s->cur_rdp |= (val & 0xffffffff) << 32;
             if (s->request_descriptor_post_head ==
                 (s->request_descriptor_post_tail + 1) % ARRAY_SIZE(s->request_descriptor_post)) {
                 DPRINTF("%s:%d Request descriptor post queue is full.\n", __func__, __LINE__);
                 mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
             } else {
-                s->request_descriptor_post[s->request_descriptor_post_tail++] = cpu_to_le64(s->cur_rdp);
+                s->request_descriptor_post[s->request_descriptor_post_tail++] = val;
                 s->request_descriptor_post_tail %= ARRAY_SIZE(s->request_descriptor_post);
+                DPRINTF("%s:%d Request descriptor post queue head %d, tail %d\n",
+                        __func__, __LINE__, s->request_descriptor_post_head, s->request_descriptor_post_tail);
                 qemu_bh_schedule(s->request_bh);
             }
             break;
         }
+        case MPI2_REQUEST_DESCRIPTOR_POST_HIGH_OFFSET:
+            break;
         case MPI26_ATOMIC_REQUEST_DESCRIPTOR_POST_OFFSET:
             break;
         default:
