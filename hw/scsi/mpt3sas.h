@@ -99,8 +99,6 @@ struct MPT3SASState {
     uint32_t request_descriptor_post_head;
     uint32_t request_descriptor_post_tail;
 
-    uint64_t cur_rdp;
-
     // host configured settings through IOCInit
     uint8_t host_page_size;
     uint8_t host_msix_vectors;
