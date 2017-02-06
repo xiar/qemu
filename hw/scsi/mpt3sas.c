@@ -604,6 +604,7 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply, uint8
         mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
         trace_mpt3sas_reply_free_queue(s, s->reply_free_ioc_index, s->reply_free_host_index);
         trace_mpt3sas_reply_post_queue(s, s->reply_post_ioc_index, s->reply_post_host_index);
+        DPRINTF("%s:%d Resource unavailable.\n", __func__, __LINE__);
         return;
     }
 
@@ -620,7 +621,7 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply, uint8
         trace_mpt3sas_reply_frame_address(s, ((hwaddr)s->system_reply_address_hi << 32) | reply_address_lo);
         // write the data to dest address
         pci_dma_write(pci, ((hwaddr)s->system_reply_address_hi << 32) | reply_address_lo,
-                reply, MIN(MPT3SAS_MAX_REPLY_SIZE * 4, reply->MsgLength * 4));
+                reply, MIN(MPT3SAS_REPLY_FRAME_SIZE * 4, reply->MsgLength * 4));
 
         //Update reply_free_ioc_index
         s->reply_free_ioc_index = (s->reply_free_ioc_index == s->reply_free_queue_depth - 1) ? 0 : s->reply_free_ioc_index + 1;
@@ -761,22 +762,25 @@ static void mpt3sas_handle_ioc_facts(MPT3SASState *s,Mpi2IOCFactsRequest_t *req)
     reply.MaxMSIxVectors = MPT3SAS_MAX_MSIX_VECTORS;
     reply.RequestCredit = MPT3SAS_MAX_OUTSTANDING_REQUESTS;
     reply.ProductID = MPT3SAS_LSI3008_PRODUCT_ID;
-    reply.IOCCapabilities = 0x0; //TODO
-    //reply.FWVersion = 0x20000000;
-    reply.IOCRequestFrameSize = 2048; //TODO
+    reply.IOCCapabilities = MPI2_IOCFACTS_CAPABILITY_TLR | MPI2_IOCFACTS_CAPABILITY_EEDP | MPI2_IOCFACTS_CAPABILITY_SNAPSHOT_BUFFER | MPI2_IOCFACTS_CAPABILITY_DIAG_TRACE_BUFFER | MPI2_IOCFACTS_CAPABILITY_TASK_SET_FULL_HANDLING;
+    reply.FWVersion.Struct.Major = 0xd;
+    reply.FWVersion.Struct.Minor = 0x0;
+    reply.FWVersion.Struct.Unit = 0x0;
+    reply.FWVersion.Struct.Dev = 0x0;
+    reply.IOCRequestFrameSize = MPT3SAS_REQUEST_FRAME_SIZE;
     reply.IOCMaxChainSegmentSize = 0;
     reply.MaxInitiators = 1;
     reply.MaxTargets = s->max_devices;
     reply.MaxSasExpanders = 0x1;
     reply.MaxEnclosures = 0x1;
     reply.ProtocolFlags = MPI2_IOCFACTS_PROTOCOL_SCSI_INITIATOR | MPI2_IOCFACTS_PROTOCOL_SCSI_TARGET;
-    reply.HighPriorityCredit = 64; //TODO
-    reply.MaxReplyDescriptorPostQueueDepth = 8192; //TODO
-    reply.ReplyFrameSize = MPT3SAS_MAX_REPLY_SIZE; //TODO
-    reply.MaxVolumes = 0x0; //TODO
+    reply.HighPriorityCredit = 124;
+    reply.MaxReplyDescriptorPostQueueDepth = MPT3SAS_MAX_REPLY_DESCRIPTOR_QUEUE_DEPTH;
+    reply.ReplyFrameSize = MPT3SAS_REPLY_FRAME_SIZE;
+    reply.MaxVolumes = 0x0;
     reply.MaxDevHandle = s->max_devices;
-    reply.MaxPersistentEntries = 0x0; //TODO
-    reply.CurrentHostPageSize = 0x0; //TODO
+    reply.MaxPersistentEntries = 0x0;
+    reply.CurrentHostPageSize = 0x0;
 
     mpt3sas_reply(s, (MPI2DefaultReply_t *)&reply);
 }
@@ -1029,14 +1033,14 @@ static void mpt3sas_handle_port_enable(MPT3SASState *s, uint16_t smid, Mpi2PortE
 static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr addr)
 {
     PCIDevice *pci = (PCIDevice *)s;
-    uint32_t left = req->scsi_io.DataLength;
+    //uint32_t left = req->scsi_io.DataLength;
     uint8_t chain_offset = req->scsi_io.ChainOffset;
     hwaddr sgaddr = addr + req->scsi_io.SGLOffset0 * sizeof(uint32_t);
     hwaddr next_chain_addr = addr + chain_offset * sizeof(uint32_t) * 4;
     uint32_t sglen = 0;
 
-
-    pci_dma_sglist_init(&req->qsg, pci, 1);
+    pci_dma_sglist_init(&req->qsg, pci, 4);
+    trace_mpt3sas_ieee_sgl_build_table(s, req, req->scsi_io.DataLength, chain_offset);
     for (;;) {
         uint8_t flags;
         dma_addr_t addr, len = 0;
@@ -1049,32 +1053,26 @@ static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr a
                (hwaddr)ldl_le_pci_dma(pci, sgaddr + 4) << 32;
             len = ldl_le_pci_dma(pci, sgaddr + 8);
 
-            trace_mpt3sas_add_ieee_sgl_simple_element(s, addr, len);
+            trace_mpt3sas_ieee_sgl_add_simple_element(s, addr, len, flags);
             qemu_sglist_add(&req->qsg, addr, len);
-            left -= len;
             //Update sgaddr
             sgaddr += 16;
         } else if ((flags & MPI2_IEEE_SGE_FLAGS_ELEMENT_TYPE_MASK) == MPI2_IEEE_SGE_FLAGS_CHAIN_ELEMENT) {
-            if (!chain_offset)
-                break;
+            //Read chain offset offset
+            chain_offset = (ldl_le_pci_dma(pci, sgaddr + 12) >> 16) & 0xff;
 
             sgaddr = ldl_le_pci_dma(pci, next_chain_addr) | 
                 (hwaddr)ldl_le_pci_dma(pci, next_chain_addr + 4) << 32;
 
             sglen = ldl_le_pci_dma(pci, next_chain_addr + 8);
+            trace_mpt3sas_ieee_sgl_add_chain_element(s, sgaddr, sglen, flags);
 
-            trace_mpt3sas_handle_ieee_sgl_chain_element(s, sgaddr, sglen);
-            chain_offset = (ldl_le_pci_dma(pci, sgaddr + 12) >> 16) & 0xff;
+            //next chain element addr
             next_chain_addr = sgaddr + chain_offset * sizeof(uint32_t) * 4;
         }
 
        if ((flags & 0xc0) ==  MPI25_IEEE_SGE_FLAGS_END_OF_LIST)
             break;
-
-        len = MIN(len, left);
-        if (!len) {
-            break;
-        }
     }
 
     return 0;
@@ -1140,6 +1138,8 @@ static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, Mpi25S
 
     if (mpt3sas_req->qsg.size < req->DataLength) {
         status = MPI2_IOCSTATUS_INVALID_SGL;
+        DPRINTF("%s:%d qsg size 0x%x request data length 0x%x\n",
+                __func__, __LINE__, (uint32_t)mpt3sas_req->qsg.size, req->DataLength);
         goto free_bad;
     }
 
@@ -1186,6 +1186,7 @@ bad:
 
     reply.Reserved3 = smid;
     mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
+    DPRINTF("%s:%d SCSI IO error. status (0x%x)\n", __func__, __LINE__, status);
     return status;
 }
 
@@ -1377,7 +1378,7 @@ static void mpt3sas_hard_reset(MPT3SASState *s)
 static void mpt3sas_handle_request(MPT3SASState *s)
 {
     PCIDevice *pci = (PCIDevice *)s;
-    uint8_t req[MPT3SAS_MAX_REQUEST_SIZE];
+    uint8_t req[MPT3SAS_REQUEST_FRAME_SIZE * 4];
     MPI2RequestHeader_t *hdr = (MPI2RequestHeader_t *)req;
     hwaddr addr;
     int size;
@@ -1427,7 +1428,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
     if (hdr->Function < ARRAY_SIZE(mpi2_request_sizes) && 
         mpi2_request_sizes[hdr->Function]) {
         size = mpi2_request_sizes[hdr->Function];
-        assert(size <= MPT3SAS_MAX_REQUEST_SIZE);
+        assert(size <= MPT3SAS_REQUEST_FRAME_SIZE * 4);
         pci_dma_read(pci, addr + sizeof(hdr), &req[sizeof(hdr)],
                 size - sizeof(hdr));
         if (0) {
@@ -1688,6 +1689,7 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
         {
             if (s->request_descriptor_post_head ==
                 (s->request_descriptor_post_tail + 1) % ARRAY_SIZE(s->request_descriptor_post)) {
+                DPRINTF("%s:%d Request descriptor post queue is full.\n", __func__, __LINE__);
                 mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
             } else {
                 s->request_descriptor_post[s->request_descriptor_post_tail++] = val;
