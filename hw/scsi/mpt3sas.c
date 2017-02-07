@@ -36,7 +36,7 @@
 #include "trace.h"
 
 #define NAA_LOCALLY_ASSIGNED_ID 0x3ULL
-#define IEEE_COMPANY_LOCALLY_ASSIGNED 0x525400
+#define IEEE_COMPANY_LOCALLY_ASSIGNED 0x51866d
 
 #define TYPE_MPT3SAS3008   "lsisas3008"
 
@@ -122,6 +122,7 @@ static uint8_t device_handle_to_phy(uint16_t dev_handle)
 
     return dev_handle - (MPT3SAS_NUM_PORTS + 1);
 }
+
 static SCSIDevice *mpt3sas_phy_get_device(MPT3SASState *s, uint32_t i, uint16_t *dev_handle)
 {
     SCSIDevice *d = scsi_device_find(&s->bus, 0, i, 0);
@@ -545,14 +546,14 @@ static void mpt3sas_update_interrupt(MPT3SASState *s)
     
     uint32_t state = s->intr_status & ~(s->intr_mask | MPI2_HIS_SYS2IOC_DB_STATUS);
 
-    trace_mpt3sas_irq_int(s, state);
+    trace_mpt3sas_irq_int(state);
     pci_set_irq(pci, !!state);
 }
 
 static void mpt3sas_clear_reply_descriptor_int(MPT3SASState *s)
 {
     if (s->reply_post_host_index == s->reply_post_ioc_index) {
-        trace_mpt3sas_clear_reply_descriptor_int(s, s->intr_status);
+        trace_mpt3sas_clear_reply_descriptor_int(s->intr_status);
         // host reply post queue is empty
         if (s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT) {
             s->intr_status &= ~MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
@@ -584,7 +585,7 @@ static void mpt3sas_interrupt_status_write(MPT3SASState *s)
 
 static void mpt3sas_set_fault(MPT3SASState *s, uint32_t code)
 {
-    trace_mpt3sas_set_fault(s, code);
+    trace_mpt3sas_set_fault(code);
     if ((s->state & MPI2_IOC_STATE_FAULT) == 0)
         s->state = MPI2_IOC_STATE_FAULT | code;
 }
@@ -602,14 +603,12 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply, uint8
         (s->reply_post_host_index ==
         (s->reply_post_ioc_index + 1) % s->reply_descriptor_post_queue_depth)) {
         mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
-        trace_mpt3sas_reply_free_queue(s, s->reply_free_ioc_index, s->reply_free_host_index);
-        trace_mpt3sas_reply_post_queue(s, s->reply_post_ioc_index, s->reply_post_host_index);
-        DPRINTF("%s:%d Resource unavailable.\n", __func__, __LINE__);
+        trace_mpt3sas_post_reply_error(s->reply_free_ioc_index, s->reply_free_host_index, s->reply_post_ioc_index, s->reply_post_host_index);
         return;
     }
 
-    trace_mpt3sas_reply_free_queue(s, s->reply_free_ioc_index, s->reply_free_host_index);
-    trace_mpt3sas_reply_post_queue(s, s->reply_post_ioc_index, s->reply_post_host_index);
+    trace_mpt3sas_reply_free_queue(s->reply_free_ioc_index, s->reply_free_host_index);
+    trace_mpt3sas_reply_post_queue(s->reply_post_ioc_index, s->reply_post_host_index);
 
     // Prepare Reply Descriptor and Generate Interrupt to notify host 
     // a Reply Descriptor was arrived.
@@ -618,7 +617,7 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply, uint8
         // Read reply address low 32-bit
         reply_address_lo = ldl_le_pci_dma(pci, s->reply_free_queue_address + s->reply_free_ioc_index * sizeof(uint32_t));
 
-        trace_mpt3sas_reply_frame_address(s, ((hwaddr)s->system_reply_address_hi << 32) | reply_address_lo);
+        trace_mpt3sas_reply_frame_address(((hwaddr)s->system_reply_address_hi << 32) | reply_address_lo);
         // write the data to dest address
         pci_dma_write(pci, ((hwaddr)s->system_reply_address_hi << 32) | reply_address_lo,
                 reply, MIN(MPT3SAS_REPLY_FRAME_SIZE * 4, reply->MsgLength * 4));
@@ -641,7 +640,7 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply, uint8
     pci_dma_write(pci, s->reply_descriptor_post_queue_address + s->reply_post_ioc_index * sizeof(uint64_t), &descriptor, sizeof(descriptor));
     s->reply_post_ioc_index = (s->reply_post_ioc_index == s->reply_descriptor_post_queue_depth - 1) ? 0 : s->reply_post_ioc_index + 1;
 
-    trace_mpt3sas_reply_post_completed(s, smid);
+    trace_mpt3sas_post_reply_completed(smid);
     //Generate interrupt
     s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
     if (s->doorbell_state == DOORBELL_WRITE) {
@@ -729,13 +728,13 @@ static void mpt3sas_send_event(void *opaque)
 {
     MPT3SASState *s = (MPT3SASState *)opaque;
 
-    trace_mpt3sas_send_event(s, s->event);
+    trace_mpt3sas_send_event(s->event);
     switch (s->event) {
         case MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST:
             mpt3sas_event_sas_topology_change_list(s);
             break;
         default:
-            trace_mpt3sas_unhandled_event(s, s->event);
+            trace_mpt3sas_unhandled_event(s->event);
             break;
     }
 }
@@ -822,7 +821,7 @@ static void mpt3sas_handle_ioc_init(MPT3SASState *s, Mpi2IOCInitRequest_t *req)
     s->reply_descriptor_post_queue_address = (hwaddr)req->ReplyDescriptorPostQueueAddress;
     s->reply_free_queue_address = (hwaddr)req->ReplyFreeQueueAddress;
     
-    trace_mpt3sas_host_configuration(s, req->SystemRequestFrameSize, req->ReplyDescriptorPostQueueDepth, req->ReplyFreeQueueDepth, req->SystemRequestFrameBaseAddress, req->ReplyDescriptorPostQueueAddress, req->ReplyFreeQueueAddress, req->SystemReplyAddressHigh);
+    trace_mpt3sas_ioc_init(req->SystemRequestFrameSize, req->ReplyDescriptorPostQueueDepth, req->ReplyFreeQueueDepth, req->SystemRequestFrameBaseAddress, req->ReplyDescriptorPostQueueAddress, req->ReplyFreeQueueAddress, req->SystemReplyAddressHigh);
 
     if (s->state == MPI2_IOC_STATE_READY) {
         s->state = MPI2_IOC_STATE_OPERATIONAL;
@@ -870,7 +869,7 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, Mpi2ConfigRequ
     uint64_t pa = 0;
     uint8_t *data = NULL;
 
-    trace_mpt3sas_handle_config(s, req->Action, req->Header.PageType,
+    trace_mpt3sas_handle_config(req->Action, req->Header.PageType,
             req->Header.PageNumber, req->Header.PageLength, req->Header.PageVersion, 
             req->ExtPageType, req->ExtPageLength, req->PageAddress);
 
@@ -1040,7 +1039,7 @@ static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr a
     uint32_t sglen = 0;
 
     pci_dma_sglist_init(&req->qsg, pci, 4);
-    trace_mpt3sas_ieee_sgl_build_table(s, req, req->scsi_io.DataLength, chain_offset);
+    trace_mpt3sas_ieee_sgl_build_table(req, req->scsi_io.DataLength, chain_offset);
     for (;;) {
         uint8_t flags;
         dma_addr_t addr, len = 0;
@@ -1053,7 +1052,7 @@ static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr a
                (hwaddr)ldl_le_pci_dma(pci, sgaddr + 4) << 32;
             len = ldl_le_pci_dma(pci, sgaddr + 8);
 
-            trace_mpt3sas_ieee_sgl_add_simple_element(s, addr, len, flags);
+            trace_mpt3sas_ieee_sgl_add_simple_element(addr, len, flags);
             qemu_sglist_add(&req->qsg, addr, len);
             //Update sgaddr
             sgaddr += 16;
@@ -1065,7 +1064,7 @@ static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr a
                 (hwaddr)ldl_le_pci_dma(pci, next_chain_addr + 4) << 32;
 
             sglen = ldl_le_pci_dma(pci, next_chain_addr + 8);
-            trace_mpt3sas_ieee_sgl_add_chain_element(s, sgaddr, sglen, flags);
+            trace_mpt3sas_ieee_sgl_add_chain_element(sgaddr, sglen, flags);
 
             //next chain element addr
             next_chain_addr = sgaddr + chain_offset * sizeof(uint32_t) * 4;
@@ -1080,7 +1079,6 @@ static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr a
 
 static void __attribute__((unused)) dump_cdb(uint8_t *buf)
 {
-    int i = 0;
     int length = 8;
 
     switch (buf[0]) {
@@ -1101,11 +1099,14 @@ static void __attribute__((unused)) dump_cdb(uint8_t *buf)
             break;
     }
 
-    DPRINTF("CDB: ");
-    for (i = 0; i < length; i++) {
-        qemu_log_mask(LOG_TRACE, "%02x ", buf[i]);
+    switch (length) {
+        case 10:
+            trace_mpt3sas_scsi_command_cdb10(buf[0], buf[1], buf[2], buf[3], buf[4], buf[5],
+                    buf[6], buf[7], buf[8], buf[9]);
+            break;
+        default:
+            break;
     }
-    qemu_log_mask(LOG_TRACE, "\n");
 }
 
 static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, Mpi25SCSIIORequest_t *req, hwaddr addr)
@@ -1116,7 +1117,7 @@ static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, Mpi25S
     SCSIDevice *sdev;
     Mpi2SCSIIOReply_t reply;
 
-    trace_mpt3sas_handle_scsi_io_request(s, req->DevHandle, req->LUN[1], req->DataLength, req->Control);
+    trace_mpt3sas_scsi_io_request(req->DevHandle, req->LUN[1], req->DataLength, req->Control);
     //mpt3sas_print_scsi_devices(&s->bus);
     status = mpt3sas_scsi_device_find(s, req->DevHandle, req->LUN, &sdev);
     if (status) {
@@ -1128,8 +1129,8 @@ static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, Mpi25S
     mpt3sas_req->scsi_io = *req;
     mpt3sas_req->dev = s;
     mpt3sas_req->smid = smid;
-    trace_mpt3sas_scsi_io_command_info(s, req, req->CDB.CDB32[0], smid);
-//    dump_cdb(req->CDB.CDB32);
+    trace_mpt3sas_scsi_io_command_info(req, req->CDB.CDB32[0], smid);
+    dump_cdb(req->CDB.CDB32);
 
     status = mpt3sas_build_ieee_sgl(s, mpt3sas_req, addr);
     if (status) {
@@ -1186,7 +1187,7 @@ bad:
 
     reply.Reserved3 = smid;
     mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
-    DPRINTF("%s:%d SCSI IO error. status (0x%x)\n", __func__, __LINE__, status);
+    trace_mpt3sas_scsi_io_error(status);
     return status;
 }
 
@@ -1217,7 +1218,7 @@ static void mpt3sas_handle_scsi_task_management(MPT3SASState *s, uint16_t smid, 
     SCSIRequest *r, *next;
     BusChild *kid;
 
-    trace_mpt3sas_handle_scsi_task_management(s, req->TaskType, req->TaskMID);
+    trace_mpt3sas_scsi_task_management(req->TaskType, req->TaskMID);
     memset(&reply, 0, sizeof(reply));
     reply.DevHandle = req->DevHandle;
     reply.MsgLength = sizeof(reply) / 4;
@@ -1320,7 +1321,7 @@ out:
 
 static void mpt3sas_handle_message(MPT3SASState *s, MPI2RequestHeader_t *req)
 {
-    trace_mpt3sas_handle_message(s, req->Function);
+    trace_mpt3sas_handle_message(req->Function);
     switch (req->Function) {
         case MPI2_FUNCTION_IOC_INIT:
             mpt3sas_handle_ioc_init(s, (Mpi2IOCInitRequest_t *)req);
@@ -1342,7 +1343,7 @@ static void mpt3sas_soft_reset(MPT3SASState *s)
 {
     uint32_t save_mask;
 
-    trace_mpt3sas_soft_reset(s);
+    trace_mpt3sas_soft_reset();
     save_mask = s->intr_mask;
     s->intr_mask = MPI2_HIM_RESET_IRQ_MASK | MPI2_HIM_DIM | MPI2_HIM_DIM;
     mpt3sas_update_interrupt(s);
@@ -1359,8 +1360,8 @@ static void mpt3sas_soft_reset(MPT3SASState *s)
     s->request_descriptor_post_tail = 0;
     memset(s->request_descriptor_post, 0, ARRAY_SIZE(s->request_descriptor_post));
 
-    s->controller_dev_handle = 0x1111;
-    s->sas_address = 0x55223344117788;
+    s->controller_dev_handle = 0x1;
+    //s->sas_address = 0x51866da05a753a00;
     qemu_bh_cancel(s->request_bh);
     qemu_bh_cancel(s->event_handler);
     s->state = MPI2_IOC_STATE_READY;
@@ -1419,7 +1420,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
 
     }
 
-    trace_mpt3sas_handle_request(s, request_desc, smid);
+    trace_mpt3sas_handle_request(request_desc, smid);
     addr = s->system_request_frame_base_address + (s->system_request_frame_size * 4) * smid;
 
     // Read request header from system request message frames queue
@@ -1607,7 +1608,7 @@ static uint64_t mpt3sas_mmio_read(void *opaque, hwaddr addr,
               break;
     }
 
-    trace_mpt3sas_mmio_read(s, register_description[addr & ~ 3], size, ret);
+    trace_mpt3sas_mmio_read(register_description[addr & ~ 3], size, ret);
 
     return ret;
 }
@@ -1617,7 +1618,7 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
 {
     MPT3SASState *s = opaque;
 
-    trace_mpt3sas_mmio_write(s, register_description[addr], size, val);
+    trace_mpt3sas_mmio_write(register_description[addr], size, val);
 
     switch (addr) {
         case MPI2_DOORBELL_OFFSET:
@@ -1747,7 +1748,7 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
 
     sense_len = scsi_req_get_sense(sreq, sense_buf, SCSI_SENSE_BUF_SIZE);
     if (sense_len > 0) {
-        trace_mpt3sas_scsi_command_sense_data(s, sense_buf[0] & 0x7f, sense_buf[1] & 0xf, sense_buf[2], sense_buf[3]);
+        trace_mpt3sas_scsi_io_command_sense_data(sense_buf[0] & 0x7f, sense_buf[1] & 0xf, sense_buf[2], sense_buf[3]);
         pci_dma_write(PCI_DEVICE(s), sense_buffer_addr, sense_buf,
                 MIN(req->scsi_io.SenseBufferLength, sense_len));
     }
@@ -1778,7 +1779,7 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
             reply.IOCStatus = MPI2_IOCSTATUS_SCSI_DATA_UNDERRUN;
         }
 
-        trace_mpt3sas_scsi_command_error(s, req, req->scsi_io.CDB.CDB32[0], req->smid, sreq->status);
+        trace_mpt3sas_scsi_io_command_error(req, req->scsi_io.CDB.CDB32[0], req->smid, sreq->status);
         mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
     } else {
         Mpi2SCSIIOReply_t reply;
@@ -1805,7 +1806,7 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
             //dump_cdb(req->scsi_io.CDB.CDB32);
         }
 
-        trace_mpt3sas_scsi_command_succeed(s, req, req->scsi_io.CDB.CDB32[0], lba);
+        trace_mpt3sas_scsi_io_command_succeed(req, req->scsi_io.CDB.CDB32[0], lba);
 
         mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_SCSI_IO_SUCCESS);
     }
@@ -1892,12 +1893,12 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
         msix_vector_use(dev, 0);
     }
 
-    if (!s->sas_addr) {
-        s->sas_addr = ((NAA_LOCALLY_ASSIGNED_ID << 24) |
+    if (!s->sas_address) {
+        s->sas_address = ((NAA_LOCALLY_ASSIGNED_ID << 24) |
                        IEEE_COMPANY_LOCALLY_ASSIGNED) << 36;
-        s->sas_addr |= (pci_bus_num(dev->bus) << 16);
-        s->sas_addr |= (PCI_SLOT(dev->devfn) << 8);
-        s->sas_addr |= PCI_FUNC(dev->devfn);
+        s->sas_address |= (pci_bus_num(dev->bus) << 16);
+        s->sas_address |= (PCI_SLOT(dev->devfn) << 8);
+        s->sas_address |= PCI_FUNC(dev->devfn);
     }
 
     s->max_devices = MPT3SAS_NUM_PORTS;
@@ -1930,7 +1931,7 @@ static void mpt3sas_reset(DeviceState *dev)
 }
 
 static Property mpt3sas_properties[] = {
-    DEFINE_PROP_UINT64("sas_address", MPT3SASState, sas_addr, 0),
+    DEFINE_PROP_UINT64("sas_address", MPT3SASState, sas_address, 0),
     DEFINE_PROP_BIT("use_msix", MPT3SASState, msix_available, 0, true),
     DEFINE_PROP_END_OF_LIST(),
 };

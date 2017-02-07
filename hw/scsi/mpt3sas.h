@@ -61,7 +61,6 @@ struct MPT3SASState {
 
     uint32_t msix_available;
     bool msix_in_use;
-    uint64_t sas_addr;
 
     /* interrupt register */
     uint32_t intr_status;
