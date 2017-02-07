@@ -839,7 +839,7 @@ mpt3sas_handle_config(uint16_t action, uint16_t page_type, uint16_t pange_num, u
 mpt3sas_ieee_sgl_build_table(void *req, uint32_t length, uint32_t offset) "request %p data length 0x%x chain offset 0x%x"
 mpt3sas_ieee_sgl_add_simple_element(uint64_t addr, uint32_t length, uint8_t flag) "adding addr 0x%lx length 0x%x flags 0x%x"
 mpt3sas_ieee_sgl_add_chain_element(uint64_t sgaddr, uint32_t sglen, uint8_t flag) "next sgl table addr 0x%lx sg len 0x%x flags 0x%x"
-mpt3sas_scsi_io_request(uint16_t dev_handle, int lun, int len, uint32_t control) "dev handle 0x%04x lun 0x%x len 0x%x control 0x%x"
+mpt3sas_scsi_io_request(uint16_t dev_handle, int lun, int len, uint32_t control, uint16_t smid) "dev handle 0x%04x lun 0x%x len 0x%x control 0x%x smid 0x%04x"
 mpt3sas_scsi_io_command_info(void *req, uint8_t command, uint16_t smid) "request %p command 0x%02x smid 0x%04x"
 mpt3sas_scsi_task_management(int task_type, uint16_t smid) "task type 0x%x task mid 0x%04x"
 mpt3sas_handle_message(int function) "message function 0x%x"
@@ -849,7 +849,7 @@ mpt3sas_mmio_read(const char *reg_desc, int len, uint32_t val) "read [%s] len 0x
 mpt3sas_mmio_write(const char *reg_desc, int len, uint64_t val) "write [%s] len 0x%x val 0x%lx"
 mpt3sas_scsi_io_command_sense_data(int sense_code, int sk, int asc, int ascq) "sense code 0x%x sk/asc/ascq (%02x/%02x/%02x)"
 mpt3sas_scsi_io_command_error(void *req, int command, uint16_t smid, int status) "request %p command 0x%02x smid 0x%04x completed with errors(status 0x%x)."
-mpt3sas_scsi_io_command_succeed(void *req, int command, uint64_t lba) "request %p command 0x%02x lba 0x%lx complete successfully"
+mpt3sas_scsi_io_command_completed(void *req, uint16_t smid, int command, uint64_t lba) "request %p smid 0x%04x command 0x%02x lba 0x%lx complete successfully"
 mpt3sas_scsi_command_cdb10(uint8_t cdb1, uint8_t cdb2, uint8_t cdb3, uint8_t cdb4, uint8_t cdb5, uint8_t cdb6, uint8_t cdb7, uint8_t cdb8, uint8_t cdb9, uint8_t cdb10) "cdb: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x"
 mpt3sas_scsi_io_error(uint32_t status) "SCSI IO error (status 0x%x)"
 

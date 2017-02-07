@@ -641,7 +641,11 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply, uint8
     s->reply_post_ioc_index = (s->reply_post_ioc_index == s->reply_descriptor_post_queue_depth - 1) ? 0 : s->reply_post_ioc_index + 1;
 
     trace_mpt3sas_post_reply_completed(smid);
-    //Generate interrupt
+
+    // if the interrupt bit is already set, leave it up
+    if (s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)
+        return;
+
     s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
     if (s->doorbell_state == DOORBELL_WRITE) {
         s->doorbell_state = DOORBELL_NONE;
@@ -1117,7 +1121,7 @@ static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, Mpi25S
     SCSIDevice *sdev;
     Mpi2SCSIIOReply_t reply;
 
-    trace_mpt3sas_scsi_io_request(req->DevHandle, req->LUN[1], req->DataLength, req->Control);
+    trace_mpt3sas_scsi_io_request(req->DevHandle, req->LUN[1], req->DataLength, req->Control, smid);
     //mpt3sas_print_scsi_devices(&s->bus);
     status = mpt3sas_scsi_device_find(s, req->DevHandle, req->LUN, &sdev);
     if (status) {
@@ -1806,7 +1810,7 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
             //dump_cdb(req->scsi_io.CDB.CDB32);
         }
 
-        trace_mpt3sas_scsi_io_command_succeed(req, req->scsi_io.CDB.CDB32[0], lba);
+        trace_mpt3sas_scsi_io_command_completed(req, req->smid, req->scsi_io.CDB.CDB32[0], lba);
 
         mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_SCSI_IO_SUCCESS);
     }
