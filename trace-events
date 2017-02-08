@@ -852,6 +852,8 @@ mpt3sas_scsi_io_command_error(void *req, int command, uint16_t smid, int status)
 mpt3sas_scsi_io_command_completed(void *req, uint16_t smid, int command, uint64_t lba) "request %p smid 0x%04x command 0x%02x lba 0x%lx complete successfully"
 mpt3sas_scsi_command_cdb10(uint8_t cdb1, uint8_t cdb2, uint8_t cdb3, uint8_t cdb4, uint8_t cdb5, uint8_t cdb6, uint8_t cdb7, uint8_t cdb8, uint8_t cdb9, uint8_t cdb10) "cdb: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x"
 mpt3sas_scsi_io_error(uint32_t status) "SCSI IO error (status 0x%x)"
+mpt3sas_event_add_device(void *dev, uint16_t dev_handle, uint8_t phy_id) "Attaching scsi device %p device handle 0x%x phy id 0x%x"
+mpt3sas_scsi_device_list(void *dev, uint32_t channel, uint32_t scsi_id, uint32_t lun) "scsi device %p channel %d scsi_id %d lun %d"
 
 
 # hw/audio/milkymist-ac97.c

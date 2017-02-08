@@ -153,8 +153,8 @@ static void __attribute__((unused)) mpt3sas_print_scsi_devices(SCSIBus *bus)
     QTAILQ_FOREACH_REVERSE(kid, &bus->qbus.children, ChildrenHead, sibling) {
         DeviceState *qdev = kid->child;
         SCSIDevice *dev = SCSI_DEVICE(qdev);
-        DPRINTF("%s:%d SCSI Device (%p) channel %d, scsi id %d lun %d\n",
-                __func__, __LINE__, dev, dev->channel, dev->id, dev->lun);
+
+        trace_mpt3sas_scsi_device_list(dev, dev->channel, dev->id, dev->lun);
     }
 }
 static int mpt3sas_scsi_device_find(MPT3SASState *s, uint16_t dev_handle,
@@ -686,7 +686,7 @@ static void mpt3sas_event_sas_topology_change_list(MPT3SASState *s)
     Mpi2EventNotificationReply_t *reply = NULL;
     uint32_t event_data_length = 0;
 
-    event_data_length = offsetof(Mpi2EventDataSasTopologyChangeList_t, PHY) + sizeof(MPI2_EVENT_SAS_TOPO_PHY_ENTRY) * MPT3SAS_NUM_PORTS;
+    event_data_length = sizeof(Mpi2EventDataSasTopologyChangeList_t) * MPT3SAS_NUM_PORTS;
 
     stcl = g_malloc(event_data_length);
     memset(stcl, 0, event_data_length);
@@ -697,10 +697,15 @@ static void mpt3sas_event_sas_topology_change_list(MPT3SASState *s)
     stcl->StartPhyNum = 0x0;
     stcl->ExpStatus =  MPI2_EVENT_SAS_TOPO_ES_NO_EXPANDER; //Currently not support expander
     stcl->PhysicalPort = 0x0; //ignore
+
+    mpt3sas_print_scsi_devices(&s->bus);
     for (i = 0; i < stcl->NumEntries; i++) {
         uint16_t dev_handle = 0;
         SCSIDevice *dev = mpt3sas_phy_get_device(s, i, &dev_handle);
 
+        if (dev) {
+            trace_mpt3sas_event_add_device(dev, dev_handle, i);
+        }
         stcl->PHY[i].AttachedDevHandle = dev ? dev_handle : 0x0;
         stcl->PHY[i].LinkRate = dev ? MPI25_EVENT_SAS_TOPO_LR_RATE_12_0 << MPI2_EVENT_SAS_TOPO_LR_CURRENT_SHIFT : MPI2_EVENT_SAS_TOPO_LR_NEGOTIATION_FAILED;
         stcl->PHY[i].PhyStatus = dev ? MPI2_EVENT_SAS_TOPO_RC_TARG_ADDED : MPI2_EVENT_SAS_TOPO_PHYSTATUS_VACANT | MPI2_EVENT_SAS_TOPO_RC_NO_CHANGE;
@@ -1083,25 +1088,7 @@ static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr a
 
 static void __attribute__((unused)) dump_cdb(uint8_t *buf)
 {
-    int length = 8;
-
-    switch (buf[0]) {
-        case 0x00:
-        case 0x1a:
-        case 0x12:
-            length = 6;
-            break;
-        case 0x5a:
-        case 0x28:
-        case 0x2a:
-        case 0xa3:
-            length = 10;
-            break;
-        case 0x9e:
-        case 0x85:
-            length = 16;
-            break;
-    }
+    int length = scsi_cdb_length(buf);
 
     switch (length) {
         case 10:
