@@ -602,7 +602,7 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply, uint8
     if (s->reply_free_ioc_index == s->reply_free_host_index ||
         (s->reply_post_host_index ==
         (s->reply_post_ioc_index + 1) % s->reply_descriptor_post_queue_depth)) {
-        mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
+        mpt3sas_set_fault(s, MPI2_IOCSTATUS_BUSY);
         trace_mpt3sas_post_reply_error(s->reply_free_ioc_index, s->reply_free_host_index, s->reply_post_ioc_index, s->reply_post_host_index);
         return;
     }
@@ -636,8 +636,9 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply, uint8
         descriptor.SCSIIOSuccess.SMID = smid;
         descriptor.SCSIIOSuccess.TaskTag = 0x0; //TODO, this value is assigned by IOC
     }
+
     //Write reply descriptor to reply post queue.1
-    pci_dma_write(pci, s->reply_descriptor_post_queue_address + s->reply_post_ioc_index * sizeof(uint64_t), &descriptor, sizeof(descriptor));
+    stq_le_pci_dma(pci, s->reply_descriptor_post_queue_address + s->reply_post_ioc_index * sizeof(uint64_t), descriptor.Words);
     s->reply_post_ioc_index = (s->reply_post_ioc_index == s->reply_descriptor_post_queue_depth - 1) ? 0 : s->reply_post_ioc_index + 1;
 
     trace_mpt3sas_post_reply_completed(smid);
@@ -1657,6 +1658,10 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
             break;
         case MPI2_REPLY_POST_HOST_INDEX_OFFSET:
             s->reply_post_host_index = val & MPI2_REPLY_POST_HOST_INDEX_MASK;
+            if (s->reply_post_host_index == 
+                (s->reply_post_ioc_index + 1) % s->reply_descriptor_post_queue_depth) {
+                mpt3sas_set_fault(s, MPI2_IOCSTATUS_SUCCESS);
+            }
             //clear ReplyDescriptorInterrupt
             mpt3sas_clear_reply_descriptor_int(s);
             break;
@@ -1682,7 +1687,7 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
             if (s->request_descriptor_post_head ==
                 (s->request_descriptor_post_tail + 1) % ARRAY_SIZE(s->request_descriptor_post)) {
                 DPRINTF("%s:%d Request descriptor post queue is full.\n", __func__, __LINE__);
-                mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
+                mpt3sas_set_fault(s, MPI2_IOCSTATUS_BUSY);
             } else {
                 s->request_descriptor_post[s->request_descriptor_post_tail++] = val;
                 s->request_descriptor_post_tail %= ARRAY_SIZE(s->request_descriptor_post);
@@ -1874,11 +1879,6 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
     // bar1 for memory io space, size: 64K
     pci_register_bar(dev, 1, PCI_BASE_ADDRESS_SPACE_MEMORY |
                                  PCI_BASE_ADDRESS_MEM_TYPE_64, &s->mmio_io);
-
-    // bar2 for memory io space ester_bar
-    pci_register_bar(dev, 3, PCI_BASE_ADDRESS_SPACE_MEMORY |
-                                 PCI_BASE_ADDRESS_MEM_TYPE_64, &s->diag_io);
-
 
     if (s->msix_available) {
         msix_vector_use(dev, 0);
