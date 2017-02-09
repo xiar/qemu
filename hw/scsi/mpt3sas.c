@@ -555,11 +555,9 @@ static void mpt3sas_clear_reply_descriptor_int(MPT3SASState *s)
     if (s->reply_post_host_index == s->reply_post_ioc_index) {
         trace_mpt3sas_clear_reply_descriptor_int(s->intr_status);
         // host reply post queue is empty
-        if (s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT) {
-            s->intr_status &= ~MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
-            smp_wmb();
-            mpt3sas_update_interrupt(s);
-        }
+        s->intr_status &= ~MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
+        smp_wmb();
+        mpt3sas_update_interrupt(s);
     }
 }
 
@@ -590,7 +588,7 @@ static void mpt3sas_set_fault(MPT3SASState *s, uint32_t code)
         s->state = MPI2_IOC_STATE_FAULT | code;
 }
 
-static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply, uint8_t reply_flags)
+static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply)
 {
     uint32_t reply_address_lo = 0;
     PCIDevice *pci = (PCIDevice *)s;
@@ -602,7 +600,7 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply, uint8
     if (s->reply_free_ioc_index == s->reply_free_host_index ||
         (s->reply_post_host_index ==
         (s->reply_post_ioc_index + 1) % s->reply_descriptor_post_queue_depth)) {
-        mpt3sas_set_fault(s, MPI2_IOCSTATUS_BUSY);
+        mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
         trace_mpt3sas_post_reply_error(s->reply_free_ioc_index, s->reply_free_host_index, s->reply_post_ioc_index, s->reply_post_host_index);
         return;
     }
@@ -612,40 +610,34 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply, uint8
 
     // Prepare Reply Descriptor and Generate Interrupt to notify host 
     // a Reply Descriptor was arrived.
-    if (reply_flags == MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY) {
-        // Get Reply free Queue and Write the data to dest through DMA.
-        // Read reply address low 32-bit
-        reply_address_lo = ldl_le_pci_dma(pci, s->reply_free_queue_address + s->reply_free_ioc_index * sizeof(uint32_t));
+    //
+    // Get Reply free Queue and Write the data to dest through DMA.
+    // Read reply address low 32-bit
+    reply_address_lo = ldl_le_pci_dma(pci, s->reply_free_queue_address + s->reply_free_ioc_index * sizeof(uint32_t));
 
-        trace_mpt3sas_reply_frame_address(((hwaddr)s->system_reply_address_hi << 32) | reply_address_lo);
-        // write the data to dest address
-        pci_dma_write(pci, ((hwaddr)s->system_reply_address_hi << 32) | reply_address_lo,
-                reply, MIN(MPT3SAS_REPLY_FRAME_SIZE * 4, reply->MsgLength * 4));
+    trace_mpt3sas_reply_frame_address(((hwaddr)s->system_reply_address_hi << 32) | reply_address_lo);
+    // write the data to dest address
+    pci_dma_write(pci, ((hwaddr)s->system_reply_address_hi << 32) | reply_address_lo,
+            reply, MIN(MPT3SAS_REPLY_FRAME_SIZE * 4, reply->MsgLength * 4));
 
-        //Update reply_free_ioc_index
-        s->reply_free_ioc_index = (s->reply_free_ioc_index == s->reply_free_queue_depth - 1) ? 0 : s->reply_free_ioc_index + 1;
+    //Update reply_free_ioc_index
+    s->reply_free_ioc_index = (s->reply_free_ioc_index == s->reply_free_queue_depth - 1) ? 0 : s->reply_free_ioc_index + 1;
 
-        descriptor.AddressReply.ReplyFlags = reply_flags;
-        descriptor.AddressReply.MSIxIndex = 0;
-        descriptor.AddressReply.SMID = smid;
-        descriptor.AddressReply.ReplyFrameAddress = reply_address_lo;
-    } else if (reply_flags == MPI2_RPY_DESCRIPT_FLAGS_SCSI_IO_SUCCESS) {
-        //TODO:
-        descriptor.SCSIIOSuccess.ReplyFlags = reply_flags;
-        descriptor.SCSIIOSuccess.MSIxIndex = 0;
-        descriptor.SCSIIOSuccess.SMID = smid;
-        descriptor.SCSIIOSuccess.TaskTag = 0x0; //TODO, this value is assigned by IOC
-    }
+    descriptor.AddressReply.ReplyFlags = MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY;
+    descriptor.AddressReply.MSIxIndex = 0;
+    descriptor.AddressReply.SMID = smid;
+    descriptor.AddressReply.ReplyFrameAddress = reply_address_lo;
 
     //Write reply descriptor to reply post queue.1
     stq_le_pci_dma(pci, s->reply_descriptor_post_queue_address + s->reply_post_ioc_index * sizeof(uint64_t), descriptor.Words);
     s->reply_post_ioc_index = (s->reply_post_ioc_index == s->reply_descriptor_post_queue_depth - 1) ? 0 : s->reply_post_ioc_index + 1;
 
+    s->completed_commands++;
     trace_mpt3sas_post_reply_completed(smid);
 
     // if the interrupt bit is already set, leave it up
-    if (s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)
-        return;
+    //if (s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)
+    //    return;
 
     s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
     if (s->doorbell_state == DOORBELL_WRITE) {
@@ -653,6 +645,32 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply, uint8
         s->intr_status |= MPI2_HIS_IOC2SYS_DB_STATUS;
     }
     mpt3sas_update_interrupt(s);
+}
+
+static void mpt3sas_scsi_io_reply(MPT3SASState *s, uint16_t smid)
+{
+    Mpi2ReplyDescriptorsUnion_t descriptor;
+
+    if ( (s->reply_post_host_index == (s->reply_post_ioc_index + 1) % s->reply_descriptor_post_queue_depth)) {
+        mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
+        trace_mpt3sas_post_reply_error(s->reply_free_ioc_index, s->reply_free_host_index, s->reply_post_ioc_index, s->reply_post_host_index);
+        return;
+    }
+
+    descriptor.SCSIIOSuccess.ReplyFlags = MPI2_RPY_DESCRIPT_FLAGS_SCSI_IO_SUCCESS;
+    descriptor.SCSIIOSuccess.MSIxIndex = 0;
+    descriptor.SCSIIOSuccess.SMID = smid;
+    descriptor.SCSIIOSuccess.TaskTag = 0x0; //TODO, this value is assigned by IOC
+
+    stq_le_pci_dma(PCI_DEVICE(s), s->reply_descriptor_post_queue_address + s->reply_post_ioc_index * sizeof(uint64_t), descriptor.Words);
+    s->reply_post_ioc_index = (s->reply_post_ioc_index == s->reply_descriptor_post_queue_depth - 1) ? 0 : s->reply_post_ioc_index + 1;
+
+    // Make sure the next queue slot is unused. I found that the head of reply descriptor post queue held by driver
+    // is increased a bit fast than the tail of reply descriptor post queue held by IOC.
+    stq_le_pci_dma(PCI_DEVICE(s), s->reply_descriptor_post_queue_address + s->reply_post_ioc_index * sizeof(uint64_t), 0xFFFFFFFFFFFFFFFF);
+
+    //s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
+    //mpt3sas_update_interrupt(s);
 }
 
 static void mpt3sas_reply(MPT3SASState *s, MPI2DefaultReply_t *reply)
@@ -674,7 +692,7 @@ static void mpt3sas_cancel_notify(Notifier *notifier, void *data)
 
     if (++n->reply->TerminationCount == n->reply->IOCLogInfo) {
         n->reply->IOCLogInfo = 0;
-        mpt3sas_post_reply(n->s, (MPI2DefaultReply_t *)n->reply, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
+        mpt3sas_post_reply(n->s, (MPI2DefaultReply_t *)n->reply);
         g_free(n->reply);
     }
     g_free(n);
@@ -721,7 +739,7 @@ static void mpt3sas_event_sas_topology_change_list(MPT3SASState *s)
     reply->Event = MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST;
     reply->Reserved1 = 0;
     memcpy(reply->EventData, stcl, event_data_length);
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)reply, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
+    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)reply);
     free(reply);
     free(stcl);
 }
@@ -865,7 +883,7 @@ static void mpt3sas_handle_event_notification(MPT3SASState *s, uint16_t smid, Mp
     // use reply.Reserved1 to store smid
     reply.Reserved2 = smid;
 
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
+    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
 }
 
 static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, Mpi2ConfigRequest_t *req)
@@ -1018,7 +1036,7 @@ done:
     }
 
 out:
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
+    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
     g_free(data);
     return ;
 }
@@ -1036,7 +1054,7 @@ static void mpt3sas_handle_port_enable(MPT3SASState *s, uint16_t smid, Mpi2PortE
 
     reply.Reserved4 = smid;
 
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
+    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
 }
 
 static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr addr)
@@ -1178,7 +1196,7 @@ bad:
     reply.IOCStatus = status;
 
     reply.Reserved3 = smid;
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
+    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
     trace_mpt3sas_scsi_io_error(status);
     return status;
 }
@@ -1197,7 +1215,7 @@ static void mpt3sas_handle_event_ack(MPT3SASState *s, uint16_t smid, Mpi2EventAc
 
     reply.Reserved4 = smid;
 
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
+    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
 }
 
 static void mpt3sas_handle_scsi_task_management(MPT3SASState *s, uint16_t smid, Mpi2SCSITaskManagementRequest_t *req)
@@ -1307,7 +1325,7 @@ reply_maybe_async:
             break;
     }
 out:
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
+    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
 
 }
 
@@ -1352,10 +1370,15 @@ static void mpt3sas_soft_reset(MPT3SASState *s)
     s->request_descriptor_post_tail = 0;
     memset(s->request_descriptor_post, 0, ARRAY_SIZE(s->request_descriptor_post));
 
+    memset(s->completed_queue, 0, ARRAY_SIZE(s->completed_queue));
+    s->completed_queue_head = 0;
+    s->completed_queue_tail = 0;
+
     s->controller_dev_handle = 0x1;
     //s->sas_address = 0x51866da05a753a00;
     qemu_bh_cancel(s->request_bh);
     qemu_bh_cancel(s->event_handler);
+    qemu_bh_cancel(s->completed_request_bh);
     s->state = MPI2_IOC_STATE_READY;
 }
 
@@ -1477,6 +1500,39 @@ static void mpt3sas_handle_requests(void *opaque)
 
     while (s->request_descriptor_post_head != s->request_descriptor_post_tail) {
         mpt3sas_handle_request(s);
+    }
+}
+
+// TO emulate interrupt coalescing
+static void mpt3sas_handle_completed_request(void *opaque)
+{
+    MPT3SASState *s = opaque;
+    int processed = 0;
+    uint32_t reply_post_queue_len = 0;
+
+    reply_post_queue_len = (s->reply_post_ioc_index - s->reply_post_host_index + s->reply_descriptor_post_queue_depth) % s->reply_descriptor_post_queue_depth;
+
+    while (s->completed_queue_head != s->completed_queue_tail) {
+        MPT3SASRequest *req = s->completed_queue[s->completed_queue_head];
+
+        mpt3sas_scsi_io_reply(s, req->smid); 
+        s->completed_commands++;
+        trace_mpt3sas_scsi_io_command_completed(req, req->smid, req->scsi_io.CDB.CDB32[0], s->completed_commands);
+        mpt3sas_free_request(req);
+        s->completed_queue[s->completed_queue_head] = NULL;
+        s->completed_queue_head++;
+        s->completed_queue_head %= ARRAY_SIZE(s->completed_queue);
+        processed++;
+    }
+
+    smp_rmb();
+
+    DPRINTF("%s:%d processed %d intr_status 0x%08x reply post queue len 0x%x\n",
+            __func__, __LINE__, processed, s->intr_status, reply_post_queue_len);
+    if (processed > 0 && !(s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)) {
+        trace_mpt3sas_interrupt_coalescing(processed);
+        s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
+        mpt3sas_update_interrupt(s);
     }
 }
 
@@ -1658,9 +1714,13 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
             break;
         case MPI2_REPLY_POST_HOST_INDEX_OFFSET:
             s->reply_post_host_index = val & MPI2_REPLY_POST_HOST_INDEX_MASK;
+
+            trace_mpt3sas_reply_post_queue(s->reply_post_host_index, s->reply_post_ioc_index);
             if (s->reply_post_host_index == 
                 (s->reply_post_ioc_index + 1) % s->reply_descriptor_post_queue_depth) {
-                mpt3sas_set_fault(s, MPI2_IOCSTATUS_SUCCESS);
+                mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
+                trace_mpt3sas_reply_post_queue_full();
+                break;
             }
             //clear ReplyDescriptorInterrupt
             mpt3sas_clear_reply_descriptor_int(s);
@@ -1776,23 +1836,10 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
         }
 
         trace_mpt3sas_scsi_io_command_error(req, req->scsi_io.CDB.CDB32[0], req->smid, sreq->status);
-        mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY);
+        mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
+        mpt3sas_free_request(req);
     } else {
-        Mpi2SCSIIOReply_t reply;
         uint32_t lba = 0x0;
-
-        memset(&reply, 0, sizeof(reply));
-        reply.DevHandle = req->scsi_io.DevHandle;
-        reply.MsgLength = sizeof(reply) / 4;
-        reply.Function = req->scsi_io.Function;
-        reply.MsgFlags = req->scsi_io.MsgFlags;
-        reply.VP_ID = req->scsi_io.VP_ID;
-        reply.VF_ID = req->scsi_io.VF_ID;
-        reply.SCSIStatus = sreq->status;
-        reply.TaskTag = 0; //TODO
-        reply.TransferCount = req->scsi_io.DataLength;
-
-        reply.Reserved3 = req->smid;
 
         if (req->scsi_io.CDB.CDB32[0] == 0x28 || req->scsi_io.CDB.CDB32[0] == 0x2a) {
             lba = (uint32_t)req->scsi_io.CDB.CDB32[2] << 24 |
@@ -1802,12 +1849,14 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
             //dump_cdb(req->scsi_io.CDB.CDB32);
         }
 
-        trace_mpt3sas_scsi_io_command_completed(req, req->smid, req->scsi_io.CDB.CDB32[0], lba);
+        trace_mpt3sas_scsi_io_add_command(req, req->scsi_io.CDB.CDB32[0], req->smid, lba);
 
-        mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply, MPI2_RPY_DESCRIPT_FLAGS_SCSI_IO_SUCCESS);
+        //mpt3sas_scsi_io_reply(s, req->smid);
+        s->completed_queue[s->completed_queue_tail++] = req;
+        s->completed_queue_tail %= ARRAY_SIZE(s->completed_queue);
+        qemu_bh_schedule(s->completed_request_bh);
     }
     
-    mpt3sas_free_request(req);
 }
 
 static void mpt3sas_request_cancelled(SCSIRequest *sreq)
@@ -1896,6 +1945,7 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
 
     s->request_bh = qemu_bh_new(mpt3sas_handle_requests, s);
     s->event_handler = qemu_bh_new(mpt3sas_send_event, s);
+    s->completed_request_bh = qemu_bh_new(mpt3sas_handle_completed_request, s);
 
     QTAILQ_INIT(&s->pending);
 
@@ -1915,6 +1965,7 @@ static void mpt3sas_scsi_uninit(PCIDevice *dev)
 
     qemu_bh_delete(s->request_bh);
     qemu_bh_delete(s->event_handler);
+    qemu_bh_delete(s->completed_request_bh);
 }
 
 static void mpt3sas_reset(DeviceState *dev)

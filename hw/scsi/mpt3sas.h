@@ -15,12 +15,10 @@
 #define MPT3SAS_MAX_MSIX_VECTORS    8
 #define MPT3SAS_MAX_OUTSTANDING_REQUESTS    9680 //max outstanding requests held by driver
 #define MPT3SAS_MAX_REPLY_DESCRIPTOR_QUEUE_DEPTH 19440
-
 #define MPT3SAS_REQUEST_FRAME_SIZE   32
 #define MPT3SAS_REPLY_FRAME_SIZE      32
 
 #define MPT3SAS_REQUEST_QUEUE_DEPTH MPT3SAS_MAX_OUTSTANDING_REQUESTS
-#define MPT3SAS_REPLY_QUEUE_DEPTH   128
 
 
 typedef struct MPT3SASState MPT3SASState;
@@ -119,8 +117,17 @@ struct MPT3SASState {
 
     uint64_t sas_address;
 
+    uint32_t interrupts;
+
+    MPT3SASRequest *completed_queue[MPT3SAS_MAX_REPLY_DESCRIPTOR_QUEUE_DEPTH + 1];
+    uint32_t completed_queue_head;
+    uint32_t completed_queue_tail;
+    uint64_t completed_commands;
+
     SCSIBus bus;
     QTAILQ_HEAD(, MPT3SASRequest) pending;
+    //QTAILQ_HEAD(, MPT3SASRequest) completed;
+    QEMUBH *completed_request_bh;
 };
 
 #endif
