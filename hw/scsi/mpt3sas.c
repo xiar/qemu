@@ -1508,10 +1508,13 @@ static void mpt3sas_handle_completed_request(void *opaque)
 {
     MPT3SASState *s = opaque;
     int processed = 0;
-    uint32_t reply_post_queue_len = 0;
+    uint64_t delta = 0;
+    struct timeval start, now;
+    //uint32_t reply_post_queue_len = 0;
 
-    reply_post_queue_len = (s->reply_post_ioc_index - s->reply_post_host_index + s->reply_descriptor_post_queue_depth) % s->reply_descriptor_post_queue_depth;
+    //reply_post_queue_len = (s->reply_post_ioc_index - s->reply_post_host_index + s->reply_descriptor_post_queue_depth) % s->reply_descriptor_post_queue_depth;
 
+    gettimeofday(&start, NULL);
     while (s->completed_queue_head != s->completed_queue_tail) {
         MPT3SASRequest *req = s->completed_queue[s->completed_queue_head];
 
@@ -1523,12 +1526,27 @@ static void mpt3sas_handle_completed_request(void *opaque)
         s->completed_queue_head++;
         s->completed_queue_head %= ARRAY_SIZE(s->completed_queue);
         processed++;
+
+        gettimeofday(&now, NULL);
+
+        // If no interrupt is raised within 500ms, then raise an interrupt for host driver to
+        // call ISR, and avoid request timeout.
+        delta = (now.tv_sec * 1000 * 1000 + now.tv_usec) - (start.tv_sec * 1000 * 1000 + now.tv_usec);
+        if (delta > 5000000 && processed > 0 && !(s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)) {
+            s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
+            mpt3sas_update_interrupt(s);
+
+            processed = 0;
+
+            //update start
+            gettimeofday(&start, NULL);
+        }
     }
 
     smp_rmb();
 
-    DPRINTF("%s:%d processed %d intr_status 0x%08x reply post queue len 0x%x\n",
-            __func__, __LINE__, processed, s->intr_status, reply_post_queue_len);
+    //DPRINTF("%s:%d processed %d intr_status 0x%08x reply post queue len 0x%x\n",
+    //        __func__, __LINE__, processed, s->intr_status, reply_post_queue_len);
     if (processed > 0 && !(s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)) {
         trace_mpt3sas_interrupt_coalescing(processed);
         s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
@@ -1800,17 +1818,17 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
     uint8_t sense_buf[SCSI_SENSE_BUF_SIZE];
     uint8_t sense_len;
 
-    hwaddr sense_buffer_addr = (hwaddr)req->dev->sense_buffer_address_hi << 32 | req->scsi_io.SenseBufferLowAddress;
-
-    sense_len = scsi_req_get_sense(sreq, sense_buf, SCSI_SENSE_BUF_SIZE);
-    if (sense_len > 0) {
-        trace_mpt3sas_scsi_io_command_sense_data(sense_buf[0] & 0x7f, sense_buf[1] & 0xf, sense_buf[2], sense_buf[3]);
-        pci_dma_write(PCI_DEVICE(s), sense_buffer_addr, sense_buf,
-                MIN(req->scsi_io.SenseBufferLength, sense_len));
-    }
-
     if (sreq->status != GOOD || resid || req->dev->doorbell_state == DOORBELL_WRITE) {
         Mpi2SCSIIOReply_t reply;
+
+        hwaddr sense_buffer_addr = (hwaddr)req->dev->sense_buffer_address_hi << 32 | req->scsi_io.SenseBufferLowAddress;
+
+        sense_len = scsi_req_get_sense(sreq, sense_buf, SCSI_SENSE_BUF_SIZE);
+        if (sense_len > 0) {
+            trace_mpt3sas_scsi_io_command_sense_data(sense_buf[0] & 0x7f, sense_buf[1] & 0xf, sense_buf[2], sense_buf[3]);
+            pci_dma_write(PCI_DEVICE(s), sense_buffer_addr, sense_buf,
+                    MIN(req->scsi_io.SenseBufferLength, sense_len));
+        }
 
         memset(&reply, 0, sizeof(reply));
         reply.DevHandle = req->scsi_io.DevHandle;
