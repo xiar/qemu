@@ -12,7 +12,7 @@
 #define MPT3SAS_NUM_PORTS   8
 
 #define MPT3SAS_MAX_CHAIN_DEPTH     128
-#define MPT3SAS_MAX_MSIX_VECTORS    8
+#define MPT3SAS_MAX_MSIX_VECTORS    16
 #define MPT3SAS_MAX_OUTSTANDING_REQUESTS    9680 //max outstanding requests held by driver
 #define MPT3SAS_MAX_REPLY_DESCRIPTOR_QUEUE_DEPTH 19440
 #define MPT3SAS_REQUEST_FRAME_SIZE   32
@@ -32,8 +32,16 @@ enum {
 typedef struct {
     Notifier notifier;
     MPT3SASState *s;
+    uint16_t smid;
+    uint8_t msix_index;
     Mpi2SCSITaskManagementReply_t *reply;
 } MPT3SASCancelNotifier;
+
+typedef struct {
+    uint32_t ioc_index;
+    uint32_t host_index;
+    hwaddr base;
+} MPT3SASReplyPost;
 
 typedef struct MPT3SASRequest {
     Mpi25SCSIIORequest_t scsi_io;
@@ -41,6 +49,7 @@ typedef struct MPT3SASRequest {
     QEMUSGList qsg;
     MPT3SASState *dev;
     uint16_t smid; //copy of request smid
+    uint8_t msix_index;
     QTAILQ_ENTRY(MPT3SASRequest) next;
 } MPT3SASRequest;
 
@@ -90,8 +99,7 @@ struct MPT3SASState {
     uint32_t reply_free_ioc_index;  // head of reply free queue
     uint32_t reply_free_host_index; // tail of reply free queue
 
-    uint32_t reply_post_ioc_index;  // tail of reply post queue
-    uint32_t reply_post_host_index; // head of reply post queue
+    MPT3SASReplyPost reply_post[MPT3SAS_MAX_MSIX_VECTORS];
 
     // maintained internally, private to IOC
     uint64_t request_descriptor_post[MPT3SAS_REQUEST_QUEUE_DEPTH + 1];
@@ -126,7 +134,6 @@ struct MPT3SASState {
 
     SCSIBus bus;
     QTAILQ_HEAD(, MPT3SASRequest) pending;
-    //QTAILQ_HEAD(, MPT3SASRequest) completed;
     QEMUBH *completed_request_bh;
 };
 

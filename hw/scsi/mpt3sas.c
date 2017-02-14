@@ -79,9 +79,6 @@ static const int mpi2_request_sizes[] = {
 #define DPRINTF(fmt, ...) do {} while (0)
 #endif
 
-#define MPT3SAS_FLAG_USE_MSIX   1
-#define MPT3SAS_MASK_USE_MSIX   (1 << MPT3SAS_FLAG_USE_MSIX)
-
 const char *register_description[] = {
     [MPI2_DOORBELL_OFFSET] = "DOORBELL",
     [MPI2_WRITE_SEQUENCE_OFFSET] = "WRITE SEQUENCE",
@@ -550,9 +547,24 @@ static void mpt3sas_update_interrupt(MPT3SASState *s)
     pci_set_irq(pci, !!state);
 }
 
-static void mpt3sas_clear_reply_descriptor_int(MPT3SASState *s)
+static void mpt3sas_msix_notify(MPT3SASState *s, uint8_t vector)
 {
-    if (s->reply_post_host_index == s->reply_post_ioc_index) {
+    PCIDevice *pdev = PCI_DEVICE(s);
+
+    if (s->msix_in_use && msix_enabled(pdev)) {
+        trace_mpt3sas_msix_notify(vector);
+        //s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
+        msix_notify(pdev, vector);
+    }
+}
+
+static void mpt3sas_clear_reply_descriptor_int(MPT3SASState *s, uint8_t msix_index)
+{
+    if (s->msix_in_use) {
+        return;
+    }
+
+    if (s->reply_post[msix_index].host_index == s->reply_post[msix_index].ioc_index) {
         trace_mpt3sas_clear_reply_descriptor_int(s->intr_status);
         // host reply post queue is empty
         s->intr_status &= ~MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
@@ -588,25 +600,25 @@ static void mpt3sas_set_fault(MPT3SASState *s, uint32_t code)
         s->state = MPI2_IOC_STATE_FAULT | code;
 }
 
-static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply)
+static void mpt3sas_post_reply(MPT3SASState *s, uint16_t smid, uint8_t msix_index, MPI2DefaultReply_t *reply)
 {
     uint32_t reply_address_lo = 0;
     PCIDevice *pci = (PCIDevice *)s;
     Mpi2ReplyDescriptorsUnion_t descriptor;
-    uint16_t smid = reply->Reserved1;
+    //uint16_t smid = reply->Reserved1;
 
     reply->Reserved1 = 0;
 
     if (s->reply_free_ioc_index == s->reply_free_host_index ||
-        (s->reply_post_host_index ==
-        (s->reply_post_ioc_index + 1) % s->reply_descriptor_post_queue_depth)) {
+        (s->reply_post[msix_index].host_index ==
+        (s->reply_post[msix_index].ioc_index + 1) % s->reply_descriptor_post_queue_depth)) {
         mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
-        trace_mpt3sas_post_reply_error(s->reply_free_ioc_index, s->reply_free_host_index, s->reply_post_ioc_index, s->reply_post_host_index);
+        trace_mpt3sas_post_reply_error(s->reply_free_ioc_index, s->reply_free_host_index, s->reply_post[msix_index].ioc_index, s->reply_post[msix_index].host_index);
         return;
     }
 
     trace_mpt3sas_reply_free_queue(s->reply_free_ioc_index, s->reply_free_host_index);
-    trace_mpt3sas_reply_post_queue(s->reply_post_ioc_index, s->reply_post_host_index);
+    trace_mpt3sas_reply_post_queue(msix_index, s->reply_post[msix_index].base, s->reply_post[msix_index].ioc_index, s->reply_post[msix_index].host_index);
 
     // Prepare Reply Descriptor and Generate Interrupt to notify host 
     // a Reply Descriptor was arrived.
@@ -616,6 +628,7 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply)
     reply_address_lo = ldl_le_pci_dma(pci, s->reply_free_queue_address + s->reply_free_ioc_index * sizeof(uint32_t));
 
     trace_mpt3sas_reply_frame_address(((hwaddr)s->system_reply_address_hi << 32) | reply_address_lo);
+
     // write the data to dest address
     pci_dma_write(pci, ((hwaddr)s->system_reply_address_hi << 32) | reply_address_lo,
             reply, MIN(MPT3SAS_REPLY_FRAME_SIZE * 4, reply->MsgLength * 4));
@@ -624,13 +637,15 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply)
     s->reply_free_ioc_index = (s->reply_free_ioc_index == s->reply_free_queue_depth - 1) ? 0 : s->reply_free_ioc_index + 1;
 
     descriptor.AddressReply.ReplyFlags = MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY;
-    descriptor.AddressReply.MSIxIndex = 0;
+    descriptor.AddressReply.MSIxIndex = msix_index;
     descriptor.AddressReply.SMID = smid;
     descriptor.AddressReply.ReplyFrameAddress = reply_address_lo;
 
     //Write reply descriptor to reply post queue.1
-    stq_le_pci_dma(pci, s->reply_descriptor_post_queue_address + s->reply_post_ioc_index * sizeof(uint64_t), descriptor.Words);
-    s->reply_post_ioc_index = (s->reply_post_ioc_index == s->reply_descriptor_post_queue_depth - 1) ? 0 : s->reply_post_ioc_index + 1;
+    stq_le_pci_dma(pci, s->reply_post[msix_index].base + s->reply_post[msix_index].ioc_index * sizeof(uint64_t), descriptor.Words);
+    s->reply_post[msix_index].ioc_index = (s->reply_post[msix_index].ioc_index == s->reply_descriptor_post_queue_depth - 1) ? 0 : s->reply_post[msix_index].ioc_index + 1;
+
+    stq_le_pci_dma(pci, s->reply_post[msix_index].base + s->reply_post[msix_index].ioc_index * sizeof(uint64_t), 0xFFFFFFFFFFFFFFFF);
 
     s->completed_commands++;
     trace_mpt3sas_post_reply_completed(smid);
@@ -639,35 +654,39 @@ static void mpt3sas_post_reply(MPT3SASState *s, MPI2DefaultReply_t *reply)
     //if (s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)
     //    return;
 
-    s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
-    if (s->doorbell_state == DOORBELL_WRITE) {
-        s->doorbell_state = DOORBELL_NONE;
-        s->intr_status |= MPI2_HIS_IOC2SYS_DB_STATUS;
+    if (s->msix_in_use) {
+        mpt3sas_msix_notify(s, msix_index);
+    } else {
+        s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
+        if (s->doorbell_state == DOORBELL_WRITE) {
+            s->doorbell_state = DOORBELL_NONE;
+            s->intr_status |= MPI2_HIS_IOC2SYS_DB_STATUS;
+        }
+        mpt3sas_update_interrupt(s);
     }
-    mpt3sas_update_interrupt(s);
 }
 
-static void mpt3sas_scsi_io_reply(MPT3SASState *s, uint16_t smid)
+static void mpt3sas_scsi_io_reply(MPT3SASState *s, uint16_t smid, uint16_t msix_index)
 {
     Mpi2ReplyDescriptorsUnion_t descriptor;
 
-    if ( (s->reply_post_host_index == (s->reply_post_ioc_index + 1) % s->reply_descriptor_post_queue_depth)) {
+    if ( (s->reply_post[msix_index].host_index == (s->reply_post[msix_index].ioc_index + 1) % s->reply_descriptor_post_queue_depth)) {
         mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
-        trace_mpt3sas_post_reply_error(s->reply_free_ioc_index, s->reply_free_host_index, s->reply_post_ioc_index, s->reply_post_host_index);
+        trace_mpt3sas_post_reply_error(s->reply_free_ioc_index, s->reply_free_host_index, s->reply_post[msix_index].ioc_index, s->reply_post[msix_index].ioc_index);
         return;
     }
 
     descriptor.SCSIIOSuccess.ReplyFlags = MPI2_RPY_DESCRIPT_FLAGS_SCSI_IO_SUCCESS;
-    descriptor.SCSIIOSuccess.MSIxIndex = 0;
+    descriptor.SCSIIOSuccess.MSIxIndex = msix_index;
     descriptor.SCSIIOSuccess.SMID = smid;
     descriptor.SCSIIOSuccess.TaskTag = 0x0; //TODO, this value is assigned by IOC
 
-    stq_le_pci_dma(PCI_DEVICE(s), s->reply_descriptor_post_queue_address + s->reply_post_ioc_index * sizeof(uint64_t), descriptor.Words);
-    s->reply_post_ioc_index = (s->reply_post_ioc_index == s->reply_descriptor_post_queue_depth - 1) ? 0 : s->reply_post_ioc_index + 1;
+    stq_le_pci_dma(PCI_DEVICE(s), s->reply_post[msix_index].base + s->reply_post[msix_index].ioc_index * sizeof(uint64_t), descriptor.Words);
+    s->reply_post[msix_index].ioc_index = (s->reply_post[msix_index].ioc_index == s->reply_descriptor_post_queue_depth - 1) ? 0 : s->reply_post[msix_index].ioc_index + 1;
 
     // Make sure the next queue slot is unused. I found that the head of reply descriptor post queue held by driver
     // is increased a bit fast than the tail of reply descriptor post queue held by IOC.
-    stq_le_pci_dma(PCI_DEVICE(s), s->reply_descriptor_post_queue_address + s->reply_post_ioc_index * sizeof(uint64_t), 0xFFFFFFFFFFFFFFFF);
+    stq_le_pci_dma(PCI_DEVICE(s), s->reply_post[msix_index].base + s->reply_post[msix_index].ioc_index * sizeof(uint64_t), 0xFFFFFFFFFFFFFFFF);
 
     //s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
     //mpt3sas_update_interrupt(s);
@@ -692,7 +711,7 @@ static void mpt3sas_cancel_notify(Notifier *notifier, void *data)
 
     if (++n->reply->TerminationCount == n->reply->IOCLogInfo) {
         n->reply->IOCLogInfo = 0;
-        mpt3sas_post_reply(n->s, (MPI2DefaultReply_t *)n->reply);
+        mpt3sas_post_reply(n->s, n->smid, n->msix_index, (MPI2DefaultReply_t *)n->reply);
         g_free(n->reply);
     }
     g_free(n);
@@ -739,7 +758,7 @@ static void mpt3sas_event_sas_topology_change_list(MPT3SASState *s)
     reply->Event = MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST;
     reply->Reserved1 = 0;
     memcpy(reply->EventData, stcl, event_data_length);
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)reply);
+    mpt3sas_post_reply(s, 0, 0, (MPI2DefaultReply_t *)reply);
     free(reply);
     free(stcl);
 }
@@ -789,7 +808,7 @@ static void mpt3sas_handle_ioc_facts(MPT3SASState *s,Mpi2IOCFactsRequest_t *req)
     reply.MaxMSIxVectors = MPT3SAS_MAX_MSIX_VECTORS;
     reply.RequestCredit = MPT3SAS_MAX_OUTSTANDING_REQUESTS;
     reply.ProductID = MPT3SAS_LSI3008_PRODUCT_ID;
-    reply.IOCCapabilities = MPI2_IOCFACTS_CAPABILITY_TLR | MPI2_IOCFACTS_CAPABILITY_EEDP | MPI2_IOCFACTS_CAPABILITY_SNAPSHOT_BUFFER | MPI2_IOCFACTS_CAPABILITY_DIAG_TRACE_BUFFER | MPI2_IOCFACTS_CAPABILITY_TASK_SET_FULL_HANDLING;
+    reply.IOCCapabilities = MPI2_IOCFACTS_CAPABILITY_TLR | MPI2_IOCFACTS_CAPABILITY_EEDP | MPI2_IOCFACTS_CAPABILITY_SNAPSHOT_BUFFER | MPI2_IOCFACTS_CAPABILITY_DIAG_TRACE_BUFFER | MPI2_IOCFACTS_CAPABILITY_TASK_SET_FULL_HANDLING | MPI2_IOCFACTS_CAPABILITY_MSI_X_INDEX;// | MPI2_IOCFACTS_CAPABILITY_RDPQ_ARRAY_CAPABLE;
     reply.FWVersion.Struct.Major = 0xd;
     reply.FWVersion.Struct.Minor = 0x0;
     reply.FWVersion.Struct.Unit = 0x0;
@@ -849,10 +868,20 @@ static void mpt3sas_handle_ioc_init(MPT3SASState *s, Mpi2IOCInitRequest_t *req)
     s->reply_descriptor_post_queue_address = (hwaddr)req->ReplyDescriptorPostQueueAddress;
     s->reply_free_queue_address = (hwaddr)req->ReplyFreeQueueAddress;
     
-    trace_mpt3sas_ioc_init(req->SystemRequestFrameSize, req->ReplyDescriptorPostQueueDepth, req->ReplyFreeQueueDepth, req->SystemRequestFrameBaseAddress, req->ReplyDescriptorPostQueueAddress, req->ReplyFreeQueueAddress, req->SystemReplyAddressHigh);
+    trace_mpt3sas_ioc_init(s->system_request_frame_size, s->reply_descriptor_post_queue_depth, s->reply_free_queue_depth,
+            s->system_request_frame_base_address, s->reply_descriptor_post_queue_address, s->reply_free_queue_address, s->system_reply_address_hi);
 
     if (s->state == MPI2_IOC_STATE_READY) {
         s->state = MPI2_IOC_STATE_OPERATIONAL;
+    }
+
+    if (s->msix_in_use) {
+        int i;
+        for (i = 0; i < s->host_msix_vectors; i++) {
+            s->reply_post[i].base = s->reply_descriptor_post_queue_address + i * sizeof(uint64_t) * s->reply_descriptor_post_queue_depth;
+        }
+    } else {
+        s->reply_post[0].base = s->reply_descriptor_post_queue_address;
     }
 
     memset(&reply, 0, sizeof(reply));
@@ -868,7 +897,7 @@ static void mpt3sas_handle_ioc_init(MPT3SASState *s, Mpi2IOCInitRequest_t *req)
     mpt3sas_reply(s, (MPI2DefaultReply_t *)&reply);
 }
 
-static void mpt3sas_handle_event_notification(MPT3SASState *s, uint16_t smid, Mpi2EventNotificationRequest_t *req)
+static void mpt3sas_handle_event_notification(MPT3SASState *s, uint16_t smid, uint8_t msix_index, Mpi2EventNotificationRequest_t *req)
 {
     Mpi2EventNotificationReply_t reply;
 
@@ -883,10 +912,10 @@ static void mpt3sas_handle_event_notification(MPT3SASState *s, uint16_t smid, Mp
     // use reply.Reserved1 to store smid
     reply.Reserved2 = smid;
 
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
+    mpt3sas_post_reply(s, smid, msix_index, (MPI2DefaultReply_t *)&reply);
 }
 
-static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, Mpi2ConfigRequest_t *req)
+static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_index, Mpi2ConfigRequest_t *req)
 {
     PCIDevice *pci = PCI_DEVICE(s);
     Mpi2ConfigReply_t reply;
@@ -980,8 +1009,9 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, Mpi2ConfigRequ
     //determin SGL type
     if ((req->SGLFlags & MPI2_SGLFLAGS_SGL_TYPE_MASK) == MPI2_SGLFLAGS_SGL_TYPE_MPI) {
         uint32_t flags_and_length = req->PageBufferSGE.MpiSimple.FlagsLength;
+        uint8_t flags = (flags_and_length) >> 24;
         dmalen = flags_and_length & MPI2_SGE_LENGTH_MASK;
-        if (flags_and_length & MPI2_SGE_FLAGS_64_BIT_ADDRESSING) {
+        if (flags & MPI2_SGE_FLAGS_64_BIT_ADDRESSING) {
             pa = req->PageBufferSGE.MpiSimple.u.Address64;
         } else {
             pa = req->PageBufferSGE.MpiSimple.u.Address32;
@@ -1021,6 +1051,7 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, Mpi2ConfigRequ
     } else {
         assert(data[2] == page->number);
         reply.IOCStatus = MPI2_IOCSTATUS_SUCCESS;
+        trace_mpt3sas_config_page_write(req->Header.PageType, req->Header.PageNumber, pa, MIN(length, dmalen));
         pci_dma_write(pci, pa, data, MIN(length, dmalen));
         goto done;
     }
@@ -1036,12 +1067,12 @@ done:
     }
 
 out:
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
+    mpt3sas_post_reply(s, smid, msix_index, (MPI2DefaultReply_t *)&reply);
     g_free(data);
     return ;
 }
 
-static void mpt3sas_handle_port_enable(MPT3SASState *s, uint16_t smid, Mpi2PortEnableRequest_t *req)
+static void mpt3sas_handle_port_enable(MPT3SASState *s, uint16_t smid, uint8_t msix_index, Mpi2PortEnableRequest_t *req)
 {
     Mpi2PortEnableReply_t reply;
 
@@ -1054,7 +1085,7 @@ static void mpt3sas_handle_port_enable(MPT3SASState *s, uint16_t smid, Mpi2PortE
 
     reply.Reserved4 = smid;
 
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
+    mpt3sas_post_reply(s, smid, msix_index, (MPI2DefaultReply_t *)&reply);
 }
 
 static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr addr)
@@ -1119,7 +1150,7 @@ static void __attribute__((unused)) dump_cdb(uint8_t *buf)
     }
 }
 
-static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, Mpi25SCSIIORequest_t *req, hwaddr addr)
+static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, uint8_t msix_index, Mpi25SCSIIORequest_t *req, hwaddr addr)
 {
 
     MPT3SASRequest *mpt3sas_req = NULL;
@@ -1139,6 +1170,7 @@ static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, Mpi25S
     mpt3sas_req->scsi_io = *req;
     mpt3sas_req->dev = s;
     mpt3sas_req->smid = smid;
+    mpt3sas_req->msix_index = msix_index;
     trace_mpt3sas_scsi_io_command_info(req, req->CDB.CDB32[0], smid);
     dump_cdb(req->CDB.CDB32);
 
@@ -1196,12 +1228,12 @@ bad:
     reply.IOCStatus = status;
 
     reply.Reserved3 = smid;
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
+    mpt3sas_post_reply(s, smid, msix_index, (MPI2DefaultReply_t *)&reply);
     trace_mpt3sas_scsi_io_error(status);
     return status;
 }
 
-static void mpt3sas_handle_event_ack(MPT3SASState *s, uint16_t smid, Mpi2EventAckRequest_t *req)
+static void mpt3sas_handle_event_ack(MPT3SASState *s, uint16_t smid, uint8_t msix_index, Mpi2EventAckRequest_t *req)
 {
     Mpi2EventAckReply_t reply;
 
@@ -1215,10 +1247,10 @@ static void mpt3sas_handle_event_ack(MPT3SASState *s, uint16_t smid, Mpi2EventAc
 
     reply.Reserved4 = smid;
 
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
+    mpt3sas_post_reply(s, smid, msix_index, (MPI2DefaultReply_t *)&reply);
 }
 
-static void mpt3sas_handle_scsi_task_management(MPT3SASState *s, uint16_t smid, Mpi2SCSITaskManagementRequest_t *req)
+static void mpt3sas_handle_scsi_task_management(MPT3SASState *s, uint16_t smid, uint8_t msix_index, Mpi2SCSITaskManagementRequest_t *req)
 {
     Mpi2SCSITaskManagementReply_t reply;
     Mpi2SCSITaskManagementReply_t *reply_async = NULL;
@@ -1267,6 +1299,8 @@ static void mpt3sas_handle_scsi_task_management(MPT3SASState *s, uint16_t smid, 
                     notifier = g_new(MPT3SASCancelNotifier, 1);
                     notifier->s = s;
                     notifier->reply = reply_async;
+                    notifier->smid = smid;
+                    notifier->msix_index = msix_index;
                     notifier->notifier.notify = mpt3sas_cancel_notify;
                     scsi_req_cancel_async(r, &notifier->notifier);
                     goto reply_maybe_async;
@@ -1292,6 +1326,8 @@ static void mpt3sas_handle_scsi_task_management(MPT3SASState *s, uint16_t smid, 
                     notifier = g_new(MPT3SASCancelNotifier, 1);
                     notifier->s = s;
                     notifier->reply = reply_async;
+                    notifier->smid = smid;
+                    notifier->msix_index = msix_index;
                     notifier->notifier.notify = mpt3sas_cancel_notify;
                     scsi_req_cancel_async(r, &notifier->notifier);
                 }
@@ -1325,7 +1361,7 @@ reply_maybe_async:
             break;
     }
 out:
-    mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
+    mpt3sas_post_reply(s, smid, msix_index, (MPI2DefaultReply_t *)&reply);
 
 }
 
@@ -1361,10 +1397,9 @@ static void mpt3sas_soft_reset(MPT3SASState *s)
     qbus_reset_all(&s->bus.qbus);
     s->intr_status = 0;
     s->intr_mask = save_mask;
+    memset(s->reply_post, 0, ARRAY_SIZE(s->reply_post) * sizeof(MPT3SASReplyPost));
     s->reply_free_ioc_index = 0;
     s->reply_free_host_index = 0;
-    s->reply_post_ioc_index = 0;
-    s->reply_post_host_index = 0;
 
     s->request_descriptor_post_head = 0;
     s->request_descriptor_post_tail = 0;
@@ -1400,7 +1435,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
     int size;
     uint64_t mpi_request_descriptor = 0;
     uint8_t request_flags = 0;
-    //uint8_t msix_index = 0;
+    uint8_t msix_index = 0;
     uint16_t smid = 0;
     const char *request_desc = NULL;
 
@@ -1408,7 +1443,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
     mpi_request_descriptor = s->request_descriptor_post[s->request_descriptor_post_head++];
     s->request_descriptor_post_head %= ARRAY_SIZE(s->request_descriptor_post);
     request_flags = mpi_request_descriptor & 0xff;
-    //msix_index = (mpi_request_descriptor >> 8) & 0xff;
+    msix_index = (mpi_request_descriptor >> 8) & 0xff;
     smid = (mpi_request_descriptor >> 16) & 0xffff;
     switch (request_flags) {
         case MPI2_REQ_DESCRIPT_FLAGS_SCSI_IO:
@@ -1435,7 +1470,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
 
     }
 
-    trace_mpt3sas_handle_request(request_desc, smid);
+    trace_mpt3sas_handle_request(request_desc, smid, msix_index);
     addr = s->system_request_frame_base_address + (s->system_request_frame_size * 4) * smid;
 
     // Read request header from system request message frames queue
@@ -1464,25 +1499,25 @@ static void mpt3sas_handle_request(MPT3SASState *s)
 
     switch (hdr->Function) {
         case MPI2_FUNCTION_EVENT_NOTIFICATION:
-            mpt3sas_handle_event_notification(s, smid, (Mpi2EventNotificationRequest_t *)req);
+            mpt3sas_handle_event_notification(s, smid, msix_index, (Mpi2EventNotificationRequest_t *)req);
             break;
         case MPI2_FUNCTION_SCSI_IO_REQUEST:
-            mpt3sas_handle_scsi_io_request(s, smid, (Mpi25SCSIIORequest_t *)req, addr);
+            mpt3sas_handle_scsi_io_request(s, smid, msix_index, (Mpi25SCSIIORequest_t *)req, addr);
             break;
         case MPI2_FUNCTION_PORT_ENABLE:
-            mpt3sas_handle_port_enable(s, smid, (Mpi2PortEnableRequest_t *)req);
-            sleep(5);
+            mpt3sas_handle_port_enable(s, smid, msix_index, (Mpi2PortEnableRequest_t *)req);
+            sleep(2.5);
             mpt3sas_set_event(s, MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST);
             qemu_bh_schedule(s->event_handler);
             break;
         case MPI2_FUNCTION_CONFIG:
-            mpt3sas_handle_config(s, smid, (Mpi2ConfigRequest_t *)req);
+            mpt3sas_handle_config(s, smid, msix_index, (Mpi2ConfigRequest_t *)req);
             break;
         case MPI2_FUNCTION_EVENT_ACK:
-            mpt3sas_handle_event_ack(s, smid, (Mpi2EventAckRequest_t *)req);
+            mpt3sas_handle_event_ack(s, smid, msix_index, (Mpi2EventAckRequest_t *)req);
             break;
         case MPI2_FUNCTION_SCSI_TASK_MGMT:
-            mpt3sas_handle_scsi_task_management(s, smid, (Mpi2SCSITaskManagementRequest_t *)req);
+            mpt3sas_handle_scsi_task_management(s, smid, msix_index, (Mpi2SCSITaskManagementRequest_t *)req);
             break;
         default:
             mpt3sas_handle_message(s, (MPI2RequestHeader_t *)req);
@@ -1518,7 +1553,7 @@ static void mpt3sas_handle_completed_request(void *opaque)
     while (s->completed_queue_head != s->completed_queue_tail) {
         MPT3SASRequest *req = s->completed_queue[s->completed_queue_head];
 
-        mpt3sas_scsi_io_reply(s, req->smid); 
+        mpt3sas_scsi_io_reply(s, req->smid, req->msix_index); 
         s->completed_commands++;
         trace_mpt3sas_scsi_io_command_completed(req, req->smid, req->scsi_io.CDB.CDB32[0], s->completed_commands);
         mpt3sas_free_request(req);
@@ -1531,15 +1566,20 @@ static void mpt3sas_handle_completed_request(void *opaque)
 
         // If no interrupt is raised within 500ms, then raise an interrupt for host driver to
         // call ISR, and avoid request timeout.
-        delta = (now.tv_sec * 1000 * 1000 + now.tv_usec) - (start.tv_sec * 1000 * 1000 + now.tv_usec);
-        if (delta > 5000000 && processed > 0 && !(s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)) {
-            s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
-            mpt3sas_update_interrupt(s);
-
+        if (s->msix_in_use) {
+            mpt3sas_msix_notify(s, req->msix_index);
             processed = 0;
+        } else {
+            delta = (now.tv_sec * 1000 * 1000 + now.tv_usec) - (start.tv_sec * 1000 * 1000 + now.tv_usec);
+            if (delta > 500000 && processed > 0 && !(s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)) {
+                s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
+                mpt3sas_update_interrupt(s);
 
-            //update start
-            gettimeofday(&start, NULL);
+                processed = 0;
+
+                //update start
+                gettimeofday(&start, NULL);
+            }
         }
     }
 
@@ -1547,7 +1587,7 @@ static void mpt3sas_handle_completed_request(void *opaque)
 
     //DPRINTF("%s:%d processed %d intr_status 0x%08x reply post queue len 0x%x\n",
     //        __func__, __LINE__, processed, s->intr_status, reply_post_queue_len);
-    if (processed > 0 && !(s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)) {
+    if (!s->msix_in_use && processed > 0 && !(s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)) {
         trace_mpt3sas_interrupt_coalescing(processed);
         s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
         mpt3sas_update_interrupt(s);
@@ -1731,18 +1771,24 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
             s->reply_free_host_index = val;
             break;
         case MPI2_REPLY_POST_HOST_INDEX_OFFSET:
-            s->reply_post_host_index = val & MPI2_REPLY_POST_HOST_INDEX_MASK;
+        {
+            uint8_t msix_index = (val & MPI2_RPHI_MSIX_INDEX_MASK) >> 24;
+            s->reply_post[msix_index].host_index = val & MPI2_REPLY_POST_HOST_INDEX_MASK;
 
-            trace_mpt3sas_reply_post_queue(s->reply_post_host_index, s->reply_post_ioc_index);
-            if (s->reply_post_host_index == 
-                (s->reply_post_ioc_index + 1) % s->reply_descriptor_post_queue_depth) {
+            trace_mpt3sas_reply_post_queue(msix_index,
+                    s->reply_post[msix_index].base,
+                    s->reply_post[msix_index].host_index,
+                    s->reply_post[msix_index].ioc_index);
+            if (s->reply_post[msix_index].host_index == 
+                (s->reply_post[msix_index].ioc_index + 1) % s->reply_descriptor_post_queue_depth) {
                 mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
                 trace_mpt3sas_reply_post_queue_full();
                 break;
             }
             //clear ReplyDescriptorInterrupt
-            mpt3sas_clear_reply_descriptor_int(s);
+            mpt3sas_clear_reply_descriptor_int(s, msix_index);
             break;
+        }
         case MPI25_SUP_REPLY_POST_HOST_INDEX_OFFSET:
             break;
         case MPI2_HCB_SIZE_OFFSET:
@@ -1854,7 +1900,7 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
         }
 
         trace_mpt3sas_scsi_io_command_error(req, req->scsi_io.CDB.CDB32[0], req->smid, sreq->status);
-        mpt3sas_post_reply(s, (MPI2DefaultReply_t *)&reply);
+        mpt3sas_post_reply(s, req->smid, req->msix_index, (MPI2DefaultReply_t *)&reply);
         mpt3sas_free_request(req);
     } else {
         uint32_t lba = 0x0;
@@ -1875,6 +1921,36 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
         qemu_bh_schedule(s->completed_request_bh);
     }
     
+}
+
+static void mpt3sas_msix_unuse_vectors(MPT3SASState *s, uint32_t num_vectors)
+{
+    PCIDevice *dev = PCI_DEVICE(s);
+    int i;
+
+    for (i = 0; i < num_vectors; i++) {
+        msix_vector_unuse(dev, i);
+    }
+}
+
+static int mpt3sas_msix_use_vectors(MPT3SASState *s, uint32_t num_vectors)
+{
+    PCIDevice *dev = PCI_DEVICE(s);
+    int err;
+    int i;
+
+    for (i = 0; i < num_vectors; i++) {
+        err = msix_vector_use(dev, i);
+        if (err) {
+            goto rollback;
+        }
+    }
+
+    return 0;
+rollback:
+    DPRINTF("%s:%d msix vector use failed.\n", __func__, __LINE__);
+    mpt3sas_msix_unuse_vectors(s, num_vectors);
+    return err;
 }
 
 static void mpt3sas_request_cancelled(SCSIRequest *sreq)
@@ -1919,26 +1995,25 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
     memory_region_init_io(&s->port_io, OBJECT(s), &mpt3sas_port_ops, s,
             "mpt3sas-io", 256);
 
-    // nentries - 15 ??
-    // table_bar_nr 0x1
-    // table_offset 0x2000??
-    // pba_bar_nr 0x1
-    // pba_offset 0x3800 ??
-    // cap_pos 0x68 ??
+    s->msix_in_use = false;
 
-    //Disable msix now
-#if 0
-    if (s->msix_available  &&
-        !msix_init(dev, 15, &s->mmio_io, 0x1, 0x2000,
-            &s->mmio_io, 0x1, 0x3800, 0x68)) {
+    // nentries -  96 (physical), but here we just set the entries to 16
+    // table_bar_nr 0x1
+    // table_offset 0xe000
+    // pba_bar_nr 0x1
+    // pba_offset 0xf000 
+    // cap_pos 0xc0
+    if (s->msix_available &&
+        !msix_init(dev, MPT3SAS_MAX_MSIX_VECTORS, &s->mmio_io, 0x1, 0xe000,
+            &s->mmio_io, 0x1, 0xf000, 0xc0)) {
         DPRINTF("Initialize msix ok.\n");
         s->msix_in_use = true;
     }
 
     if (pci_is_express(dev)) {
-        pcie_endpoint_cap_init(dev, 0xa0);
+        // PCIE capabilities 
+        pcie_endpoint_cap_init(dev, 0x68);
     }
-#endif
 
     // bar0 for IO space, size: 256 bytes
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_IO, &s->port_io);
@@ -1947,8 +2022,8 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
     pci_register_bar(dev, 1, PCI_BASE_ADDRESS_SPACE_MEMORY |
                                  PCI_BASE_ADDRESS_MEM_TYPE_64, &s->mmio_io);
 
-    if (s->msix_available) {
-        msix_vector_use(dev, 0);
+    if (s->msix_in_use) {
+        mpt3sas_msix_use_vectors(s, MPT3SAS_MAX_MSIX_VECTORS);
     }
 
     if (!s->sas_address) {
