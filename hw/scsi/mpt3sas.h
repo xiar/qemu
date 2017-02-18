@@ -12,7 +12,7 @@
 #define MPT3SAS_NUM_PORTS   8
 
 #define MPT3SAS_MAX_CHAIN_DEPTH     128
-#define MPT3SAS_MAX_MSIX_VECTORS    16
+#define MPT3SAS_MAX_MSIX_VECTORS    1
 #define MPT3SAS_MAX_OUTSTANDING_REQUESTS    9680 //max outstanding requests held by driver
 #define MPT3SAS_MAX_REPLY_DESCRIPTOR_QUEUE_DEPTH 19440
 #define MPT3SAS_REQUEST_FRAME_SIZE   32
@@ -52,6 +52,20 @@ typedef struct MPT3SASRequest {
     uint8_t msix_index;
     QTAILQ_ENTRY(MPT3SASRequest) next;
 } MPT3SASRequest;
+
+typedef struct MPT3SASEvent {
+    uint8_t event_type;
+    uint8_t done;
+    QTAILQ_ENTRY(MPT3SASEvent) next;
+} MPT3SASEvent;
+
+typedef struct MPT3SASEventQueue {
+    QemuCond cond;
+    QemuMutex mutex;
+    QemuThread thread;
+    bool exit;
+    QTAILQ_HEAD(, MPT3SASEvent) events;
+} MPT3SASEventQueue;
 
 struct MPT3SASState {
     PCIDevice dev;
@@ -125,13 +139,14 @@ struct MPT3SASState {
 
     uint64_t sas_address;
 
-    uint32_t interrupts;
-
     MPT3SASRequest *completed_queue[MPT3SAS_MAX_REPLY_DESCRIPTOR_QUEUE_DEPTH + 1];
     uint32_t completed_queue_head;
     uint32_t completed_queue_tail;
     uint64_t completed_commands;
 
+    MPT3SASEventQueue *event_queue;
+
+    uint8_t change_list_completed;
     SCSIBus bus;
     QTAILQ_HEAD(, MPT3SASRequest) pending;
     QEMUBH *completed_request_bh;

@@ -79,6 +79,8 @@ static const int mpi2_request_sizes[] = {
 #define DPRINTF(fmt, ...) do {} while (0)
 #endif
 
+static void mpt3sas_event_enqueue(MPT3SASState *s, uint16_t event_type);
+
 const char *register_description[] = {
     [MPI2_DOORBELL_OFFSET] = "DOORBELL",
     [MPI2_WRITE_SEQUENCE_OFFSET] = "WRITE SEQUENCE",
@@ -144,7 +146,7 @@ static void mpt3sas_free_request(MPT3SASRequest *req)
     g_free(req);
 }
 
-static void __attribute__((unused)) mpt3sas_print_scsi_devices(SCSIBus *bus)
+static void mpt3sas_print_scsi_devices(SCSIBus *bus)
 {
     BusChild *kid;
     QTAILQ_FOREACH_REVERSE(kid, &bus->qbus.children, ChildrenHead, sibling) {
@@ -763,27 +765,142 @@ static void mpt3sas_event_sas_topology_change_list(MPT3SASState *s)
     free(stcl);
 }
 
-static void mpt3sas_set_event(MPT3SASState *s, uint16_t event_type)
+static void mpt3sas_event_sas_discovery(MPT3SASState *s, uint8_t rc)
 {
-    s->event = event_type;
+    Mpi2EventDataSasDiscovery_t dsd;
+    uint32_t event_data_length = 0;
+    Mpi2EventNotificationReply_t *reply = NULL;
+
+    event_data_length = sizeof(Mpi2EventDataSasDiscovery_t);
+    dsd.Flags = MPI2_EVENT_SAS_DISC_DEVICE_CHANGE;
+    dsd.PhysicalPort = 0;
+    dsd.ReasonCode = rc;
+    dsd.DiscoveryStatus = 0;
+
+    reply = g_malloc(sizeof(Mpi2EventNotificationReply_t) + event_data_length);
+    memset(reply, 0, sizeof(Mpi2EventNotificationReply_t) + event_data_length);
+    reply->EventDataLength = event_data_length / 4;
+    reply->AckRequired = 1;
+    reply->MsgLength = (sizeof(Mpi2EventNotificationReply_t) + event_data_length) / 4;
+    reply->Function = MPI2_FUNCTION_EVENT_NOTIFICATION;
+    reply->Event = MPI2_EVENT_SAS_DISCOVERY;
+    memcpy(reply->EventData, &dsd, event_data_length);
+    mpt3sas_post_reply(s, 0, 0, (MPI2DefaultReply_t *)reply);
+    g_free(reply);
 }
 
 /*
  * Send event to host
  */
-static void mpt3sas_send_event(void *opaque)
+static int mpt3sas_send_event(MPT3SASState *s, uint8_t et)
 {
-    MPT3SASState *s = (MPT3SASState *)opaque;
-
-    trace_mpt3sas_send_event(s->event);
-    switch (s->event) {
+    trace_mpt3sas_send_event(et);
+    switch (et) {
         case MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST:
             mpt3sas_event_sas_topology_change_list(s);
-            break;
+            return 0;
+        case MPI2_EVENT_SAS_DISCOVERY:
+        {
+            if (!s->change_list_completed)
+                return 1;
+
+            mpt3sas_event_sas_discovery(s, MPI2_EVENT_SAS_DISC_RC_COMPLETED);
+            return 0;
+        }
         default:
-            trace_mpt3sas_unhandled_event(s->event);
-            break;
+            trace_mpt3sas_unhandled_event(et);
+            return -1;
     }
+}
+
+static void mpt3sas_lock_event_queue(MPT3SASEventQueue *queue)
+{
+    qemu_mutex_lock(&queue->mutex);
+}
+
+static void mpt3sas_unlock_event_queue(MPT3SASEventQueue *queue)
+{
+    qemu_mutex_unlock(&queue->mutex);
+}
+
+static MPT3SASEvent *mpt3sas_new_event(uint8_t event)
+{
+    MPT3SASEvent *e = g_new0(MPT3SASEvent, 1);
+
+    e->event_type = event;
+    e->done = 0;
+    return e;
+}
+
+static void mpt3sas_event_enqueue(MPT3SASState *s, uint16_t event_type)
+{
+
+    mpt3sas_lock_event_queue(s->event_queue);
+    if (!s->event_queue->exit) {
+        MPT3SASEvent *e = mpt3sas_new_event(event_type);
+        QTAILQ_INSERT_TAIL(&s->event_queue->events, e, next);
+        qemu_cond_broadcast(&s->event_queue->cond);
+    }
+    mpt3sas_unlock_event_queue(s->event_queue);
+}
+
+static int mpt3sas_event_queue_worker_thread_loop(MPT3SASState *s)
+{
+    MPT3SASEvent *e;
+    MPT3SASEventQueue *queue = s->event_queue;
+
+    mpt3sas_lock_event_queue(queue);
+    while (QTAILQ_EMPTY(&queue->events) && !queue->exit) {
+        qemu_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    e = QTAILQ_FIRST(&queue->events);
+    mpt3sas_unlock_event_queue(queue);
+
+    if (queue->exit) {
+        return -1;
+    }
+
+    // handle event
+    if (mpt3sas_send_event(s, e->event_type) == 1) {
+        // continue to handle this event, since this event is waiting another event completed
+        return 0;
+    }
+
+    mpt3sas_lock_event_queue(queue);
+    QTAILQ_REMOVE(&queue->events, e, next);
+    mpt3sas_unlock_event_queue(queue);
+    qemu_cond_broadcast(&queue->cond);
+    g_free(e);
+    return 0;
+}
+
+static void mpt3sas_event_queue_init(MPT3SASState *s)
+{
+    s->event_queue = g_new0(MPT3SASEventQueue, 1);
+
+    qemu_cond_init(&s->event_queue->cond);
+    qemu_mutex_init(&s->event_queue->mutex);
+    QTAILQ_INIT(&s->event_queue->events);
+}
+
+static void mpt3sas_event_queue_clear(MPT3SASState *s)
+{
+    qemu_cond_destroy(&s->event_queue->cond);
+    qemu_mutex_destroy(&s->event_queue->mutex);
+    g_free(s->event_queue);
+    s->event_queue = NULL;
+};
+
+static void *mpt3sas_event_queue_worker_thread(void *arg)
+{
+    MPT3SASState *s = arg;
+
+    qemu_thread_get_self(&s->event_queue->thread);
+
+    while (!mpt3sas_event_queue_worker_thread_loop(s));
+    mpt3sas_event_queue_clear(s);
+    return NULL;
 }
 
 static void mpt3sas_handle_ioc_facts(MPT3SASState *s,Mpi2IOCFactsRequest_t *req)
@@ -859,14 +976,14 @@ static void mpt3sas_handle_ioc_init(MPT3SASState *s, Mpi2IOCInitRequest_t *req)
     s->who_init = req->WhoInit;
     s->host_page_size = req->HostPageSize;
     s->host_msix_vectors = req->HostMSIxVectors;
-    s->system_request_frame_size = req->SystemRequestFrameSize;
-    s->reply_descriptor_post_queue_depth = req->ReplyDescriptorPostQueueDepth;
-    s->reply_free_queue_depth = req->ReplyFreeQueueDepth;
-    s->sense_buffer_address_hi = req->SenseBufferAddressHigh;
-    s->system_reply_address_hi = req->SystemReplyAddressHigh;
-    s->system_request_frame_base_address = (hwaddr)req->SystemRequestFrameBaseAddress;
-    s->reply_descriptor_post_queue_address = (hwaddr)req->ReplyDescriptorPostQueueAddress;
-    s->reply_free_queue_address = (hwaddr)req->ReplyFreeQueueAddress;
+    s->system_request_frame_size = le16_to_cpu(req->SystemRequestFrameSize);
+    s->reply_descriptor_post_queue_depth = le16_to_cpu(req->ReplyDescriptorPostQueueDepth);
+    s->reply_free_queue_depth = le16_to_cpu(req->ReplyFreeQueueDepth);
+    s->sense_buffer_address_hi = le32_to_cpu(req->SenseBufferAddressHigh);
+    s->system_reply_address_hi = le32_to_cpu(req->SystemReplyAddressHigh);
+    s->system_request_frame_base_address = le64_to_cpu(req->SystemRequestFrameBaseAddress);
+    s->reply_descriptor_post_queue_address = le64_to_cpu(req->ReplyDescriptorPostQueueAddress);
+    s->reply_free_queue_address = le64_to_cpu(req->ReplyFreeQueueAddress);
     
     trace_mpt3sas_ioc_init(s->system_request_frame_size, s->reply_descriptor_post_queue_depth, s->reply_free_queue_depth,
             s->system_request_frame_base_address, s->reply_descriptor_post_queue_address, s->reply_free_queue_address, s->system_reply_address_hi);
@@ -1159,7 +1276,7 @@ static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, uint8_
     Mpi2SCSIIOReply_t reply;
 
     trace_mpt3sas_scsi_io_request(req->DevHandle, req->LUN[1], req->DataLength, req->Control, smid);
-    //mpt3sas_print_scsi_devices(&s->bus);
+    mpt3sas_print_scsi_devices(&s->bus);
     status = mpt3sas_scsi_device_find(s, req->DevHandle, req->LUN, &sdev);
     if (status) {
         goto bad;
@@ -1237,6 +1354,7 @@ static void mpt3sas_handle_event_ack(MPT3SASState *s, uint16_t smid, uint8_t msi
 {
     Mpi2EventAckReply_t reply;
 
+    trace_mpt3sas_handle_event_ack(smid, le16_to_cpu(req->Event));
     memset(&reply, 0, sizeof(reply));
     reply.Function = req->Function;
     reply.MsgFlags = req->MsgFlags;
@@ -1244,6 +1362,10 @@ static void mpt3sas_handle_event_ack(MPT3SASState *s, uint16_t smid, uint8_t msi
     reply.VF_ID = req->VF_ID;
     reply.VP_ID = req->VP_ID;
     reply.IOCStatus = MPI2_IOCSTATUS_SUCCESS;
+
+    if (le16_to_cpu(req->Event) == MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST) {
+        s->change_list_completed = 1;
+    }
 
     reply.Reserved4 = smid;
 
@@ -1412,8 +1534,23 @@ static void mpt3sas_soft_reset(MPT3SASState *s)
     s->controller_dev_handle = 0x1;
     //s->sas_address = 0x51866da05a753a00;
     qemu_bh_cancel(s->request_bh);
-    qemu_bh_cancel(s->event_handler);
     qemu_bh_cancel(s->completed_request_bh);
+
+    s->host_page_size = 0;
+    s->host_msix_vectors = 0;
+    s->system_request_frame_size = 0;
+    s->reply_descriptor_post_queue_depth = 0;
+    s->reply_free_queue_depth = 0;
+    s->sense_buffer_address_hi = 0;
+    s->system_reply_address_hi = 0;
+    s->system_request_frame_base_address = 0;
+    s->reply_descriptor_post_queue_address = 0;
+    s->reply_free_queue_address = 0;
+
+    s->ioc_reset = 0;
+
+    s->change_list_completed = 0;
+
     s->state = MPI2_IOC_STATE_READY;
 }
 
@@ -1429,7 +1566,7 @@ static void mpt3sas_hard_reset(MPT3SASState *s)
 static void mpt3sas_handle_request(MPT3SASState *s)
 {
     PCIDevice *pci = (PCIDevice *)s;
-    uint8_t req[MPT3SAS_REQUEST_FRAME_SIZE * 4];
+    uint8_t req[MPT3SAS_REQUEST_FRAME_SIZE * 4] = {0};
     MPI2RequestHeader_t *hdr = (MPI2RequestHeader_t *)req;
     hwaddr addr;
     int size;
@@ -1444,7 +1581,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
     s->request_descriptor_post_head %= ARRAY_SIZE(s->request_descriptor_post);
     request_flags = mpi_request_descriptor & 0xff;
     msix_index = (mpi_request_descriptor >> 8) & 0xff;
-    smid = (mpi_request_descriptor >> 16) & 0xffff;
+    smid = le16_to_cpu((mpi_request_descriptor >> 16) & 0xffff);
     switch (request_flags) {
         case MPI2_REQ_DESCRIPT_FLAGS_SCSI_IO:
             request_desc = "SCSI IO request";
@@ -1482,7 +1619,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
         assert(size <= MPT3SAS_REQUEST_FRAME_SIZE * 4);
         pci_dma_read(pci, addr + sizeof(hdr), &req[sizeof(hdr)],
                 size - sizeof(hdr));
-        if (0) {
+        if (1) {
             uint32_t i = 0;
             //DEBUG information
             DPRINTF("Request (0x%lx/0x%x):\n", addr, size);
@@ -1506,9 +1643,10 @@ static void mpt3sas_handle_request(MPT3SASState *s)
             break;
         case MPI2_FUNCTION_PORT_ENABLE:
             mpt3sas_handle_port_enable(s, smid, msix_index, (Mpi2PortEnableRequest_t *)req);
-            sleep(2.5);
-            mpt3sas_set_event(s, MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST);
-            qemu_bh_schedule(s->event_handler);
+
+            // Send the following event
+            mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST);
+            mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_DISCOVERY);
             break;
         case MPI2_FUNCTION_CONFIG:
             mpt3sas_handle_config(s, smid, msix_index, (Mpi2ConfigRequest_t *)req);
@@ -1983,13 +2121,37 @@ static const struct SCSIBusInfo mpt3sas_scsi_info = {
 
 };
 
+static void mpt3sas_config_write(PCIDevice *pci_dev, uint32_t address,
+        uint32_t val, int len)
+{
+    trace_mpt3sas_config_write(address, val, len);
+
+    //Workround in case the OS doesn't set BME bit.
+    if (address == PCI_COMMAND) {
+        val |= PCI_COMMAND_MASTER;
+    }
+
+    pci_default_write_config(pci_dev, address, val, len);
+}
+
+static uint32_t mpt3sas_config_read(PCIDevice *pci_dev, uint32_t address, int len)
+{
+    uint32_t val = pci_default_read_config(pci_dev, address, len);
+    trace_mpt3sas_config_read(address, val, len);
+    return val;
+}
+
 static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
 {
     DeviceState *d = DEVICE(dev);
     MPT3SASState *s = MPT3SAS(dev);
 
+    dev->config_write = mpt3sas_config_write;
+    dev->config_read = mpt3sas_config_read;
+
     dev->config[PCI_LATENCY_TIMER] = 0;
     dev->config[PCI_INTERRUPT_PIN] = 0x01;
+
     memory_region_init_io(&s->mmio_io, OBJECT(s), &mpt3sas_mmio_ops, s,
             "mpt3sas-mmio", 0x10000);
     memory_region_init_io(&s->port_io, OBJECT(s), &mpt3sas_port_ops, s,
@@ -2011,8 +2173,20 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
     }
 
     if (pci_is_express(dev)) {
+        int pos = 0;
+
         // PCIE capabilities 
-        pcie_endpoint_cap_init(dev, 0x68);
+        if (pci_bus_is_express(dev->bus)) {
+            pos = pcie_endpoint_cap_init(dev, 0x68);
+        }
+
+        // Power Management
+        pos = pci_add_capability(dev, PCI_CAP_ID_PM, 0x50, PCI_PM_SIZEOF);
+        pci_set_word(dev->config + pos + PCI_PM_PMC, 0x0603);
+        pci_set_word(dev->config + pos + PCI_PM_CTRL, 0x8);
+
+        // AER init
+        pcie_aer_init(dev, 0x100, PCI_ERR_SIZEOF);
     }
 
     // bar0 for IO space, size: 256 bytes
@@ -2037,8 +2211,11 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
     s->max_devices = MPT3SAS_NUM_PORTS;
 
     s->request_bh = qemu_bh_new(mpt3sas_handle_requests, s);
-    s->event_handler = qemu_bh_new(mpt3sas_send_event, s);
     s->completed_request_bh = qemu_bh_new(mpt3sas_handle_completed_request, s);
+
+    // Launch event handler thread
+    mpt3sas_event_queue_init(s);
+    qemu_thread_create(&s->event_queue->thread, "MPT3SAS Event Worker", mpt3sas_event_queue_worker_thread, s, QEMU_THREAD_DETACHED);
 
     QTAILQ_INIT(&s->pending);
 
@@ -2047,9 +2224,6 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
     if (!d->hotplugged) {
         scsi_bus_legacy_handle_cmdline(&s->bus, errp);
     }
-
-    // Do the hardreset
-    mpt3sas_hard_reset(s);
 }
 
 static void mpt3sas_scsi_uninit(PCIDevice *dev)
@@ -2057,12 +2231,19 @@ static void mpt3sas_scsi_uninit(PCIDevice *dev)
     MPT3SASState *s = MPT3SAS(dev);
 
     qemu_bh_delete(s->request_bh);
-    qemu_bh_delete(s->event_handler);
     qemu_bh_delete(s->completed_request_bh);
+
+    if (s->msix_in_use) {
+        msix_uninit(dev, &s->mmio_io, &s->mmio_io);
+    }
 }
 
 static void mpt3sas_reset(DeviceState *dev)
 {
+    MPT3SASState *s = MPT3SAS(dev);
+
+    DPRINTF("%s:%d PCI Device reset.\n", __func__, __LINE__);
+    mpt3sas_hard_reset(s);
 }
 
 static Property mpt3sas_properties[] = {
@@ -2081,9 +2262,13 @@ static void mpt3sas3008_class_init(ObjectClass *oc, void *data)
     pc->romfile = 0;
     pc->vendor_id = MPI2_MFGPAGE_VENDORID_LSI;
     pc->device_id = MPI25_MFGPAGE_DEVID_SAS3008;
-    pc->subsystem_vendor_id = MPI2_MFGPAGE_VENDORID_LSI;
-    pc->subsystem_id = 0x8000;
-    pc->class_id = PCI_CLASS_STORAGE_SCSI;
+    //pc->subsystem_vendor_id = 0x1f53; //Dell
+    //pc->subsystem_id = 0x1028;
+    pc->subsystem_vendor_id = 0x1000; //Dell
+    pc->subsystem_id = 0x80;
+    pc->revision = 0x2; 
+    //pc->class_id = PCI_CLASS_STORAGE_SCSI;
+    pc->class_id = 0x107;
     pc->is_express = true;
     dc->props = mpt3sas_properties;
     dc->reset = mpt3sas_reset;
