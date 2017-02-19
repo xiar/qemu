@@ -721,7 +721,7 @@ static void mpt3sas_cancel_notify(Notifier *notifier, void *data)
     g_free(n);
 }
 
-static void mpt3sas_event_sas_topology_change_list(MPT3SASState *s)
+static void mpt3sas_event_sas_topology_change_list(MPT3SASState *s, uint32_t data)
 {
     Mpi2EventDataSasTopologyChangeList_t *stcl = NULL;
     uint8_t i = 0;
@@ -750,7 +750,8 @@ static void mpt3sas_event_sas_topology_change_list(MPT3SASState *s)
         }
         stcl->PHY[i].AttachedDevHandle = dev ? cpu_to_le16(dev_handle) : 0x0;
         stcl->PHY[i].LinkRate = dev ? MPI25_EVENT_SAS_TOPO_LR_RATE_12_0 << MPI2_EVENT_SAS_TOPO_LR_CURRENT_SHIFT : MPI2_EVENT_SAS_TOPO_LR_NEGOTIATION_FAILED;
-        stcl->PHY[i].PhyStatus = dev ? MPI2_EVENT_SAS_TOPO_RC_TARG_ADDED : MPI2_EVENT_SAS_TOPO_PHYSTATUS_VACANT | MPI2_EVENT_SAS_TOPO_RC_NO_CHANGE;
+       // stcl->PHY[i].PhyStatus = dev ? MPI2_EVENT_SAS_TOPO_RC_TARG_ADDED : MPI2_EVENT_SAS_TOPO_PHYSTATUS_VACANT | MPI2_EVENT_SAS_TOPO_RC_NO_CHANGE;
+        stcl->PHY[i].PhyStatus = dev ? data: MPI2_EVENT_SAS_TOPO_PHYSTATUS_VACANT | MPI2_EVENT_SAS_TOPO_RC_NO_CHANGE;
     }
 
     reply = g_malloc(sizeof(Mpi2EventNotificationReply_t) + event_data_length);
@@ -804,7 +805,7 @@ static int mpt3sas_trigger_event(MPT3SASState *s, uint8_t et, uint32_t data)
             //    return 1;
             //}
 
-            mpt3sas_event_sas_topology_change_list(s);
+            mpt3sas_event_sas_topology_change_list(s, data);
             return 0;
         case MPI2_EVENT_SAS_DISCOVERY:
         {
@@ -951,7 +952,7 @@ static void mpt3sas_handle_ioc_facts(MPT3SASState *s, uint16_t smid, uint8_t msi
     reply.MaxReplyDescriptorPostQueueDepth = cpu_to_le16(MPT3SAS_MAX_REPLY_DESCRIPTOR_QUEUE_DEPTH);
     reply.ReplyFrameSize = MPT3SAS_REPLY_FRAME_SIZE;
     reply.MaxVolumes = 0x0;
-    reply.MaxDevHandle = cpu_to_le16(s->max_devices); // FIXME
+    reply.MaxDevHandle = cpu_to_le16(s->max_devices + 1 + MPT3SAS_NUM_PORTS); 
     reply.MaxPersistentEntries = 0x0;
     reply.CurrentHostPageSize = 0x0;
 
@@ -1509,7 +1510,20 @@ out:
 
 static void mpt3sas_handle_fw_upload(MPT3SASState *s, uint16_t smid, uint8_t msix_index, Mpi2FWUploadRequest_t *req)
 {
-    DPRINTF("%s:%d smid 0x%x msix index 0x%x\n", __func__, __LINE__, smid, msix_index);
+    Mpi2FWUploadReply_t reply;
+    Mpi2IeeeSgeSimple64_t *simple = (Mpi2IeeeSgeSimple64_t *)&req->SGL;
+    trace_mpt3sas_handle_fw_upload(smid, msix_index, req->ImageType, req->ChainOffset);
+    DPRINTF("address 0x%lx length 0x%x flags 0x%x\n", le64_to_cpu(simple->Address), le32_to_cpu(simple->Length), simple->Flags);
+
+    memset(&reply, 0, sizeof(reply));
+    reply.Function = req->Function;
+    reply.MsgLength = sizeof(reply) / 4;
+    reply.ImageType = req->ImageType;
+    reply.MsgFlags = req->MsgFlags;
+    reply.VF_ID = req->VF_ID;
+    reply.VP_ID = req->VP_ID;
+
+    mpt3sas_post_reply(s, smid, msix_index, (MPI2DefaultReply_t *)&reply);
 }
 
 /*
@@ -1647,7 +1661,15 @@ static void mpt3sas_handle_request(MPT3SASState *s)
     trace_mpt3sas_handle_request(request_desc, smid, msix_index, hdr->Function, mpi2_request_sizes[hdr->Function]);
     if (hdr->Function < ARRAY_SIZE(mpi2_request_sizes) && 
         mpi2_request_sizes[hdr->Function]) {
+
         size = mpi2_request_sizes[hdr->Function];
+
+        // Workaround in case the Guest OS uses IEEE SGL for FWUPLoad
+        // FIXME here
+        if (hdr->Function == MPI2_FUNCTION_FW_UPLOAD) {
+            size += 4; 
+        }
+
         assert(size <= MPT3SAS_REQUEST_FRAME_SIZE * 4);
         pci_dma_read(pci, addr + sizeof(hdr), &req[sizeof(hdr)],
                 size - sizeof(hdr));
@@ -1678,7 +1700,8 @@ static void mpt3sas_handle_request(MPT3SASState *s)
 
             // Send the following event
             mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_DISCOVERY, MPI2_EVENT_SAS_DISC_RC_STARTED);
-            mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST, 0xFF);
+            mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST, MPI2_EVENT_SAS_TOPO_RC_TARG_ADDED);
+            mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST, MPI2_EVENT_SAS_TOPO_RC_PHY_CHANGED);
             mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_DISCOVERY, MPI2_EVENT_SAS_DISC_RC_COMPLETED);
             break;
         case MPI2_FUNCTION_CONFIG:

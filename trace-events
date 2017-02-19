@@ -863,6 +863,7 @@ mpt3sas_config_write(uint32_t address, uint32_t val, int len) "address 0x%x val 
 mpt3sas_config_read(uint32_t address, uint32_t val, int len) "address 0x%x val 0x%x len 0x%x"
 mpt3sas_handle_event_ack(uint16_t smid, uint16_t event_type, uint32_t event_context) "handle event ack smid 0x%x event type 0x%x event context 0x%x"
 mpt3sas_handle_ioc_facts(void) "handle ioc facts"
+mpt3sas_handle_fw_upload(uint16_t smid, uint8_t msix_index, uint8_t image_type, uint8_t chain_offset) "FWUploaad smid 0x%x msix_index 0x%x image type 0x%x chain offset 0x%x"
 
 
 # hw/audio/milkymist-ac97.c
