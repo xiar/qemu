@@ -12,7 +12,7 @@
 #define MPT3SAS_NUM_PORTS   8
 
 #define MPT3SAS_MAX_CHAIN_DEPTH     128
-#define MPT3SAS_MAX_MSIX_VECTORS    1
+#define MPT3SAS_MAX_MSIX_VECTORS    16
 #define MPT3SAS_MAX_OUTSTANDING_REQUESTS    9680 //max outstanding requests held by driver
 #define MPT3SAS_MAX_REPLY_DESCRIPTOR_QUEUE_DEPTH 19440
 #define MPT3SAS_REQUEST_FRAME_SIZE   32
@@ -55,7 +55,7 @@ typedef struct MPT3SASRequest {
 
 typedef struct MPT3SASEvent {
     uint8_t event_type;
-    uint8_t done;
+    uint32_t data;
     QTAILQ_ENTRY(MPT3SASEvent) next;
 } MPT3SASEvent;
 
@@ -147,6 +147,8 @@ struct MPT3SASState {
     MPT3SASEventQueue *event_queue;
 
     uint8_t change_list_completed;
+    uint8_t sas_discovery_state;
+
     SCSIBus bus;
     QTAILQ_HEAD(, MPT3SASRequest) pending;
     QEMUBH *completed_request_bh;
