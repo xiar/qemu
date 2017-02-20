@@ -146,9 +146,6 @@ struct MPT3SASState {
 
     MPT3SASEventQueue *event_queue;
 
-    uint8_t change_list_completed;
-    uint8_t sas_discovery_state;
-
     SCSIBus bus;
     QTAILQ_HEAD(, MPT3SASRequest) pending;
     QEMUBH *completed_request_bh;

@@ -188,6 +188,9 @@ static size_t mpt3sas_config_manufacturing_0(MPT3SASState *s, uint8_t **data, in
 {
     Mpi2ManufacturingPage0_t man_pg0;
 
+    if (!data)
+        return sizeof(man_pg0);
+
     memset(&man_pg0, 0, sizeof(man_pg0));
     man_pg0.Header.PageVersion = MPI2_MANUFACTURING0_PAGEVERSION;
     man_pg0.Header.PageLength = sizeof(man_pg0) / 4;
@@ -210,6 +213,9 @@ static size_t mpt3sas_config_manufacturing_11(MPT3SASState *s, uint8_t **data, i
     Mpi2ConfigPageHeader_t *man_pg11 = NULL;
     uint32_t page_len = sizeof(Mpi2ConfigPageHeader_t) + 0x40; 
 
+    if (!data)
+        return page_len;
+
     man_pg11 = g_malloc(page_len);
     memset(man_pg11, 0, page_len);
     man_pg11->PageVersion = MPI2_MANUFACTURING11_PAGEVERSION;
@@ -228,6 +234,9 @@ static size_t mpt3sas_config_bios_2(MPT3SASState *s, uint8_t **data, int address
 {
     MPI2_CONFIG_PAGE_BIOS_2 bios_pg2;
 
+    if (!data)
+        return sizeof(bios_pg2);
+
     memset(&bios_pg2, 0, sizeof(bios_pg2));
     bios_pg2.Header.PageVersion = MPI2_BIOSPAGE2_PAGEVERSION;
     bios_pg2.Header.PageNumber = 0x2;
@@ -245,25 +254,31 @@ static size_t mpt3sas_config_bios_2(MPT3SASState *s, uint8_t **data, int address
 
 static size_t mpt3sas_config_bios_3(MPT3SASState *s, uint8_t **data, int address)
 {
-   Mpi2BiosPage3_t  bios_pg3;
+    Mpi2BiosPage3_t  bios_pg3;
 
-   memset(&bios_pg3, 0, sizeof(bios_pg3));
-   bios_pg3.Header.PageVersion = MPI2_BIOSPAGE3_PAGEVERSION;
-   bios_pg3.Header.PageNumber = 0x3;
-   bios_pg3.Header.PageType = MPI2_CONFIG_PAGETYPE_BIOS;
-   bios_pg3.Header.PageLength = sizeof(bios_pg3) / 4;
-   bios_pg3.GlobalFlags = cpu_to_le32(MPI2_BIOSPAGE3_FLAGS_HOOK_INT_40_DISABLE | MPI2_BIOSPAGE3_FLAGS_VERBOSE_ENABLE);
-   bios_pg3.BiosVersion = cpu_to_le32(0x2030101);
-   if (data) {
+    if (!data)
+        return sizeof(bios_pg3);
+
+    memset(&bios_pg3, 0, sizeof(bios_pg3));
+    bios_pg3.Header.PageVersion = MPI2_BIOSPAGE3_PAGEVERSION;
+    bios_pg3.Header.PageNumber = 0x3;
+    bios_pg3.Header.PageType = MPI2_CONFIG_PAGETYPE_BIOS;
+    bios_pg3.Header.PageLength = sizeof(bios_pg3) / 4;
+    bios_pg3.GlobalFlags = cpu_to_le32(MPI2_BIOSPAGE3_FLAGS_HOOK_INT_40_DISABLE | MPI2_BIOSPAGE3_FLAGS_VERBOSE_ENABLE);
+    bios_pg3.BiosVersion = cpu_to_le32(0x2030101);
+    if (data) {
        *data = g_malloc(sizeof(bios_pg3));
        memcpy(*data, &bios_pg3, sizeof(bios_pg3));
-   }
-   return sizeof(bios_pg3);
+    }
+    return sizeof(bios_pg3);
 }
 
 static size_t mpt3sas_config_ioc_8(MPT3SASState *s, uint8_t **data, int address)
 {
     Mpi2IOCPage8_t ioc_pg8;
+
+    if (!data)
+        return sizeof(ioc_pg8);
 
     memset(&ioc_pg8, 0, sizeof(ioc_pg8));
     ioc_pg8.Header.PageVersion = MPI2_IOCPAGE8_PAGEVERSION;
@@ -285,6 +300,9 @@ static size_t mpt3sas_config_io_unit_0(MPT3SASState *s, uint8_t **data, int addr
     PCIDevice *pci = PCI_DEVICE(s);
     Mpi2IOUnitPage0_t iounit_pg0;
 
+    if (!data)
+        return sizeof(iounit_pg0);
+
     memset(&iounit_pg0, 0, sizeof(iounit_pg0));
     iounit_pg0.Header.PageVersion = MPI2_IOUNITPAGE0_PAGEVERSION;
     iounit_pg0.Header.PageNumber = 0x0;
@@ -303,6 +321,9 @@ static size_t mpt3sas_config_io_unit_1(MPT3SASState *s, uint8_t **data, int addr
 {
     Mpi2IOUnitPage1_t iounit_pg1;
 
+    if (!data)
+        return sizeof(iounit_pg1);
+
     memset(&iounit_pg1, 0, sizeof(iounit_pg1));
     iounit_pg1.Header.PageVersion = MPI2_IOUNITPAGE1_PAGEVERSION;
     iounit_pg1.Header.PageNumber = 0x1;
@@ -320,6 +341,9 @@ static size_t mpt3sas_config_io_unit_1(MPT3SASState *s, uint8_t **data, int addr
 static size_t mpt3sas_config_io_unit_8(MPT3SASState *s, uint8_t **data, int address)
 {
     Mpi2IOUnitPage8_t iounit_pg8;
+
+    if (!data)
+        return sizeof(iounit_pg8);
 
     memset(&iounit_pg8, 0, sizeof(iounit_pg8));
     iounit_pg8.Header.PageVersion = MPI2_IOUNITPAGE8_PAGEVERSION;
@@ -341,6 +365,10 @@ static size_t mpt3sas_config_sas_io_unit_0(MPT3SASState *s, uint8_t **data, int 
     size_t page_len = 0;
 
     page_len = offsetof(Mpi2SasIOUnitPage0_t, PhyData) + sizeof(Mpi2SasIOUnit0PhyData_t) * MPT3SAS_NUM_PORTS;
+
+    if (!data)
+        return page_len;
+
     sas_iounit_pg0 = g_malloc(page_len);
     memset(sas_iounit_pg0, 0, page_len);
     sas_iounit_pg0->Header.PageVersion = MPI2_SASIOUNITPAGE0_PAGEVERSION;
@@ -378,6 +406,10 @@ static size_t mpt3sas_config_sas_io_unit_1(MPT3SASState *s, uint8_t **data, int 
     uint32_t i = 0;
 
     page_len = offsetof(Mpi2SasIOUnitPage1_t, PhyData) + sizeof(Mpi2SasIOUnit1PhyData_t) * MPT3SAS_NUM_PORTS;
+
+    if (!data)
+        return page_len;
+
     sas_iounit_pg1 = g_malloc(page_len);
     memset(sas_iounit_pg1, 0, page_len);
     sas_iounit_pg1->Header.PageVersion = MPI2_SASIOUNITPAGE1_PAGEVERSION;
@@ -408,11 +440,13 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
     uint8_t phy_id = 0;
     SCSIDevice  *d = NULL;
 
-    //if ((address & MPI2_SAS_DEVICE_PGAD_FORM_MASK) == MPI2_SAS_DEVICE_PGAD_FORM_HANDLE) {
-    //    DPRINTF("This is SAS Device 0 PageAddress Format.\n");
-    //}
+    if (!data)
+        return sizeof(sas_device_pg0);
 
     handle = address & MPI2_SAS_DEVICE_PGAD_HANDLE_MASK;
+
+    if (handle == 0xffff)
+        return -1;
 
     phy_id = device_handle_to_phy(handle);
     d = scsi_device_find(&s->bus, 0, phy_id, 0);
@@ -428,7 +462,15 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
     if (handle == s->controller_dev_handle) {
         sas_device_pg0.SASAddress = cpu_to_le64(s->sas_address);
     } else {
-        sas_device_pg0.SASAddress = d ? cpu_to_le64(s->sas_address + phy_id + 1): 0x0;
+        uint64_t sas_address = 0;
+        if (d && d->wwn) {
+            sas_address = d->wwn;
+        } else if (d) {
+            sas_address = s->sas_address + phy_id + 1;
+        } else {
+            sas_address = 0;
+        }
+        sas_device_pg0.SASAddress = cpu_to_le64(sas_address);
     }
     sas_device_pg0.ParentDevHandle = d ? cpu_to_le16(s->controller_dev_handle) : 0x0;
     sas_device_pg0.PhyNum = phy_id;
@@ -454,6 +496,9 @@ static size_t mpt3sas_config_sas_phy_0(MPT3SASState *s, uint8_t **data, int addr
     Mpi2SasPhyPage0_t sas_phy_pg0;
     uint32_t phy_number = address & MPI2_SAS_PHY_PGAD_PHY_NUMBER_MASK; 
     SCSIDevice  *d = scsi_device_find(&s->bus, 0, phy_number, 0);
+
+    if (!data)
+        return sizeof(sas_phy_pg0);
 
     memset(&sas_phy_pg0, 0, sizeof(sas_phy_pg0));
     sas_phy_pg0.Header.PageVersion = MPI2_SASPHY0_PAGEVERSION;
@@ -800,20 +845,10 @@ static int mpt3sas_trigger_event(MPT3SASState *s, uint8_t et, uint32_t data)
     trace_mpt3sas_trigger_event(et);
     switch (et) {
         case MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST:
-            //if (!s->sas_discovery_state) {
-            //    sleep(0.1);
-            //    return 1;
-            //}
-
             mpt3sas_event_sas_topology_change_list(s, data);
             return 0;
         case MPI2_EVENT_SAS_DISCOVERY:
         {
-            //if (!s->change_list_completed && s->sas_discovery_state > 0) {
-            //    sleep(0.1);
-            //    return 1;
-            //}
-
             mpt3sas_event_sas_discovery(s, data);
             return 0;
         }
@@ -922,7 +957,7 @@ static void mpt3sas_handle_ioc_facts(MPT3SASState *s, uint16_t smid, uint8_t msi
     reply.MsgVersion = cpu_to_le16(0x0205);
     reply.MsgLength = sizeof(reply) / 4;
     reply.Function = req->Function;
-    reply.HeaderVersion = 0x2a00;
+    reply.HeaderVersion = cpu_to_le16(0x2a00);
     reply.IOCNumber = 1;
     reply.MsgFlags = req->MsgFlags;
     reply.VP_ID = req->VP_ID;
@@ -1097,12 +1132,13 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_i
         case MPI2_CONFIG_ACTION_PAGE_DEFAULT:
         case MPI2_CONFIG_ACTION_PAGE_HEADER:
         case MPI2_CONFIG_ACTION_PAGE_READ_NVRAM:
+        case MPI2_CONFIG_ACTION_PAGE_READ_DEFAULT:
         case MPI2_CONFIG_ACTION_PAGE_READ_CURRENT:
         case MPI2_CONFIG_ACTION_PAGE_WRITE_CURRENT:
         case MPI2_CONFIG_ACTION_PAGE_WRITE_NVRAM:
             break;
         default:
-            reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_ACTION;
+            reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_CONFIG_INVALID_ACTION);
             goto out;
     }
 
@@ -1110,9 +1146,9 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_i
         // Just find out the reason why fails to find the page
         page = mpt3sas_find_config_page(type, 1);
         if (page) {
-            reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_PAGE;
+            reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_CONFIG_INVALID_PAGE);
         } else {
-            reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_TYPE;
+            reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_CONFIG_INVALID_TYPE);
         }
         goto out;
     }
@@ -1121,10 +1157,11 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_i
         req->Action == MPI2_CONFIG_ACTION_PAGE_HEADER) {
         length = page->mpt_config_build(s, NULL, req->PageAddress);
         if ((ssize_t)length < 0) {
-            reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_PAGE;
+            reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_CONFIG_INVALID_PAGE);
             goto out;
         } else {
-            reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_CANT_COMMIT;
+            //reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_CANT_COMMIT;
+            reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_SUCCESS);
             goto done;
         }
     }
@@ -1133,9 +1170,9 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_i
         req->Action == MPI2_CONFIG_ACTION_PAGE_WRITE_NVRAM) {
         length = page->mpt_config_build(s, NULL, req->PageAddress);
         if ((ssize_t)length < 0) {
-            reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_PAGE;
+            reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_CONFIG_INVALID_PAGE);
         } else {
-            reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_CANT_COMMIT;
+            reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_CONFIG_CANT_COMMIT);
         }
         goto out;
     }
@@ -1160,7 +1197,7 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_i
     if (dmalen == 0) {
         length = page->mpt_config_build(s, NULL, req->PageAddress);
         if ((ssize_t)length < 0) {
-            reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_PAGE;
+            reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_CONFIG_INVALID_PAGE);
             goto out;
         } else {
             goto done;
@@ -1182,11 +1219,11 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_i
     }
 
     if ((ssize_t)length < 0) {
-        reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_PAGE;
+        reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_CONFIG_INVALID_PAGE);
         goto out;
     } else {
         assert(data[2] == page->number);
-        reply.IOCStatus = MPI2_IOCSTATUS_SUCCESS;
+        reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_SUCCESS);
         trace_mpt3sas_config_page_write(req->Header.PageType, req->Header.PageNumber, pa, MIN(length, dmalen));
         pci_dma_write(pci, pa, data, MIN(length, dmalen));
         goto done;
@@ -1204,7 +1241,8 @@ done:
 
 out:
     mpt3sas_post_reply(s, smid, msix_index, (MPI2DefaultReply_t *)&reply);
-    g_free(data);
+    if (data)
+        g_free(data);
     return ;
 }
 
@@ -1235,11 +1273,30 @@ static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr a
 
     pci_dma_sglist_init(&req->qsg, pci, 4);
     trace_mpt3sas_ieee_sgl_build_table(req, req->scsi_io.DataLength, chain_offset);
+
     for (;;) {
         uint8_t flags;
         dma_addr_t addr, len = 0;
 
         flags = ldl_le_pci_dma(pci, sgaddr + 12) >> 24;
+
+        if (req->scsi_io.DataLength == 0)  { // This is a zero len page
+           if ((flags & 0xc0) ==  MPI25_IEEE_SGE_FLAGS_END_OF_LIST) { // if this is a IEEE SG format
+                addr = ldl_le_pci_dma(pci, sgaddr) | (hwaddr)ldl_le_pci_dma(pci, sgaddr + 4) << 32;
+                trace_mpt3sas_ieee_sgl_zero_len("ieee", addr, flags);
+                qemu_sglist_add(&req->qsg, addr, 0);
+                break;
+            } else { // if this is a MPI SG format
+                uint32_t flags_length = ldl_le_pci_dma(pci, sgaddr);
+                addr = ldl_le_pci_dma(pci, sgaddr + 4) | (hwaddr)ldl_le_pci_dma(pci, sgaddr + 8) << 32;
+
+                trace_mpt3sas_ieee_sgl_zero_len("mpi", addr, flags_length >> 24);
+                if ((flags_length >> MPI2_SGE_FLAGS_SHIFT) & MPI2_SGE_FLAGS_END_OF_LIST) {
+                    qemu_sglist_add(&req->qsg, addr, 0);
+                    break;
+                }
+            }
+        }
 
         if ((flags & MPI2_IEEE_SGE_FLAGS_ELEMENT_TYPE_MASK) == MPI2_IEEE_SGE_FLAGS_SIMPLE_ELEMENT) {
             // This is a Simple Element
@@ -1282,6 +1339,8 @@ static void __attribute__((unused)) dump_cdb(uint8_t *buf)
                     buf[6], buf[7], buf[8], buf[9]);
             break;
         default:
+            trace_mpt3sas_scsi_command_cdb16(buf[0], buf[1], buf[2], buf[3], buf[4], buf[5],
+                    buf[6], buf[7], buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]);
             break;
     }
 }
@@ -1381,12 +1440,6 @@ static void mpt3sas_handle_event_ack(MPT3SASState *s, uint16_t smid, uint8_t msi
     reply.VF_ID = req->VF_ID;
     reply.VP_ID = req->VP_ID;
     reply.IOCStatus = MPI2_IOCSTATUS_SUCCESS;
-
-    if (le16_to_cpu(req->Event) == MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST) {
-        s->change_list_completed++;
-    } else if (le16_to_cpu(req->Event) == MPI2_EVENT_SAS_DISCOVERY) {
-        s->sas_discovery_state++;
-    }
 
     reply.Reserved4 = smid;
 
@@ -1508,12 +1561,12 @@ out:
 
 }
 
+//FIXME: currently just respond the driver, no data were transfered to host.
 static void mpt3sas_handle_fw_upload(MPT3SASState *s, uint16_t smid, uint8_t msix_index, Mpi2FWUploadRequest_t *req)
 {
     Mpi2FWUploadReply_t reply;
-    Mpi2IeeeSgeSimple64_t *simple = (Mpi2IeeeSgeSimple64_t *)&req->SGL;
+
     trace_mpt3sas_handle_fw_upload(smid, msix_index, req->ImageType, req->ChainOffset);
-    DPRINTF("address 0x%lx length 0x%x flags 0x%x\n", le64_to_cpu(simple->Address), le32_to_cpu(simple->Length), simple->Flags);
 
     memset(&reply, 0, sizeof(reply));
     reply.Function = req->Function;
@@ -1594,9 +1647,6 @@ static void mpt3sas_soft_reset(MPT3SASState *s)
 
     s->ioc_reset = 0;
 
-    s->change_list_completed = 0;
-    s->sas_discovery_state = 0;
-
     s->state = MPI2_IOC_STATE_READY;
 }
 
@@ -1673,7 +1723,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
         assert(size <= MPT3SAS_REQUEST_FRAME_SIZE * 4);
         pci_dma_read(pci, addr + sizeof(hdr), &req[sizeof(hdr)],
                 size - sizeof(hdr));
-        if (1) {
+        if (0) {
             uint32_t i = 0;
             //DEBUG information
             DPRINTF("Request (0x%lx/0x%x):\n", addr, size);
@@ -1701,7 +1751,6 @@ static void mpt3sas_handle_request(MPT3SASState *s)
             // Send the following event
             mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_DISCOVERY, MPI2_EVENT_SAS_DISC_RC_STARTED);
             mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST, MPI2_EVENT_SAS_TOPO_RC_TARG_ADDED);
-            mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST, MPI2_EVENT_SAS_TOPO_RC_PHY_CHANGED);
             mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_DISCOVERY, MPI2_EVENT_SAS_DISC_RC_COMPLETED);
             break;
         case MPI2_FUNCTION_CONFIG:
@@ -2295,6 +2344,8 @@ static void mpt3sas_scsi_uninit(PCIDevice *dev)
     if (s->msix_in_use) {
         msix_uninit(dev, &s->mmio_io, &s->mmio_io);
     }
+
+    s->event_queue->exit = 0;
 }
 
 static void mpt3sas_reset(DeviceState *dev)
@@ -2321,13 +2372,16 @@ static void mpt3sas3008_class_init(ObjectClass *oc, void *data)
     pc->romfile = 0;
     pc->vendor_id = MPI2_MFGPAGE_VENDORID_LSI;
     pc->device_id = MPI25_MFGPAGE_DEVID_SAS3008;
-    //pc->subsystem_vendor_id = 0x1f53; //Dell
-    //pc->subsystem_id = 0x1028;
-    pc->subsystem_vendor_id = 0x1000; //Dell
-    pc->subsystem_id = 0x80;
+
+    // DELL ID
+    pc->subsystem_vendor_id = 0x1f53; //Dell
+    pc->subsystem_id = 0x1028;
+
+    // DEFAULT ID
+    //pc->subsystem_vendor_id = 0x1000; 
+    //pc->subsystem_id = 0x80;
     pc->revision = 0x2; 
-    //pc->class_id = PCI_CLASS_STORAGE_SCSI;
-    pc->class_id = 0x107;
+    pc->class_id = PCI_CLASS_STORAGE_SCSI;
     pc->is_express = true;
     dc->props = mpt3sas_properties;
     dc->reset = mpt3sas_reset;
