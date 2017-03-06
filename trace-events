@@ -866,7 +866,13 @@ mpt3sas_config_read(uint32_t address, uint32_t val, int len) "address 0x%x val 0
 mpt3sas_handle_event_ack(uint16_t smid, uint16_t event_type, uint32_t event_context) "handle event ack smid 0x%x event type 0x%x event context 0x%x"
 mpt3sas_handle_ioc_facts(void) "handle ioc facts"
 mpt3sas_handle_fw_upload(uint16_t smid, uint8_t msix_index, uint8_t image_type, uint8_t chain_offset) "FWUploaad smid 0x%x msix_index 0x%x image type 0x%x chain offset 0x%x"
-
+mpt3sas_handle_config_invalid_page(uint16_t action, uint16_t page_type, uint16_t pange_num, uint16_t page_len, uint16_t page_ver, uint16_t ext_page_type, uint16_t ext_page_len, uint32_t page_addr) "action(0x%x) page type(0x%x) number(0x%x) len(0x%x) ver(0x%x) ext. page type(0x%x) len(0x%x) page address(0x%08x)"
+mpt3sas_handle_config_sas_device_0(uint32_t form, uint32_t handle) "sas device page0 form 0x%x handle 0x%x"
+mpt3sas_handle_config_sas_phy_0(uint32_t form, uint32_t handle) "sas phy page0 form 0x%x handle 0x%x"
+mpt3sas_handle_smp_passthrough(uint8_t flags, uint8_t physical_port, uint16_t length, uint8_t sgl_flags, uint64_t address) "passthrough flags 0x%x physical port 0x%x request data length 0x%x sgl flags 0x%x sas address 0x%lx"
+mpt3sas_handle_smp_frame(uint8_t type, uint8_t function, uint64_t addr, uint32_t len) "smp frame type 0x%x function 0x%x frame address 0x%lx length 0x%x"
+mpt3sas_unhandled_smp_frame(uint8_t type, uint8_t function) "unhanded smp frame type 0x%x function 0x%x"
+mpt3sas_query_scsi_target_info(uint16_t device_handle, uint8_t phy, uint64_t addr) "device handle 0x%x phy id 0x%x sas address 0x%lx"
 
 # hw/audio/milkymist-ac97.c
 milkymist_ac97_memory_read(uint32_t addr, uint32_t value) "addr %08x value %08x"

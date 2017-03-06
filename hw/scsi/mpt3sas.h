@@ -9,7 +9,7 @@
 #include "hw/scsi/mpi/mpi2_cnfg.h"
 #include "hw/scsi/mpi/mpi2_sas.h"
 
-#define MPT3SAS_NUM_PORTS   8
+#define MPT3SAS_NUM_PHYS 8
 
 #define MPT3SAS_MAX_CHAIN_DEPTH     128
 #define MPT3SAS_MAX_MSIX_VECTORS    16
@@ -20,6 +20,15 @@
 
 #define MPT3SAS_REQUEST_QUEUE_DEPTH MPT3SAS_MAX_OUTSTANDING_REQUESTS
 
+#define MPT3SAS_IOC_HANDLE_START            (0x1)
+#define MPT3SAS_EXPANDER_HANDLE_START       (MPT3SAS_IOC_HANDLE_START + MPT3SAS_NUM_PHYS)
+//#define MPT3SAS_ATTACHED_DEV_HANDLE_START   (MPT3SAS_IOC_HANDLE_START + MPT3SAS_NUM_PORTS + 1)
+#define MPT3SAS_ATTACHED_DEV_HANDLE_START   (MPT3SAS_EXPANDER_HANDLE_START + 1)
+
+#define MPT3SAS_EXPANDER_PORT_START_PHY  (20)
+#define MPT3SAS_EXPANDER_NUM_PHYS   (28)
+
+#define MPT3SAS_ENCLOSURE_HANDLE_START (0x1)
 
 typedef struct MPT3SASState MPT3SASState;
 
@@ -53,9 +62,14 @@ typedef struct MPT3SASRequest {
     QTAILQ_ENTRY(MPT3SASRequest) next;
 } MPT3SASRequest;
 
+typedef struct MPT3SASEventData {
+    uint32_t length;
+    uint8_t data[1];
+} MPT3SASEventData;
+
 typedef struct MPT3SASEvent {
     uint8_t event_type;
-    uint32_t data;
+    void *data; // for MPT3SASEventData
     QTAILQ_ENTRY(MPT3SASEvent) next;
 } MPT3SASEvent;
 
@@ -146,6 +160,7 @@ struct MPT3SASState {
 
     MPT3SASEventQueue *event_queue;
 
+    uint16_t event_ack;
     SCSIBus bus;
     QTAILQ_HEAD(, MPT3SASRequest) pending;
     QEMUBH *completed_request_bh;
