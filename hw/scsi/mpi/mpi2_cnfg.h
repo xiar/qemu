@@ -2766,7 +2766,7 @@ typedef struct _MPI2_CONFIG_PAGE_SAS_DEV_0 {
 	U8
 		EnclosureLevel;		/*0x2F */
 	U32
-		ConnectorName[4];	/*0x30 */
+		ConnectorName;	/*0x30 */
 	U32
 		Reserved3;              /*0x34 */
 } MPI2_CONFIG_PAGE_SAS_DEV_0,

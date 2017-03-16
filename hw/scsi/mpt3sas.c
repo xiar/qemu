@@ -469,7 +469,7 @@ static size_t mpt3sas_config_sas_io_unit_0(MPT3SASState *s, uint8_t **data, int 
         sas_iounit_pg0->PhyData[i].Port = 0;
         sas_iounit_pg0->PhyData[i].PortFlags = MPI2_SASIOUNIT0_PORTFLAGS_AUTO_PORT_CONFIG;
         sas_iounit_pg0->PhyData[i].PhyFlags = 0x0;
-        sas_iounit_pg0->PhyData[i].NegotiatedLinkRate =  MPI25_SAS_NEG_LINK_RATE_12_0;
+        sas_iounit_pg0->PhyData[i].NegotiatedLinkRate =  (MPI25_SAS_NEG_LINK_RATE_12_0 << MPI2_SAS_NEG_LINK_RATE_SHIFT_LOGICAL) | MPI25_SAS_NEG_LINK_RATE_12_0;
         sas_iounit_pg0->PhyData[i].ControllerPhyDeviceInfo = cpu_to_le32( MPI2_SAS_DEVICE_INFO_SSP_INITIATOR | MPI2_SAS_DEVICE_INFO_SMP_INITIATOR | MPI2_SAS_DEVICE_INFO_END_DEVICE);
 
         sas_iounit_pg0->PhyData[i].AttachedDevHandle = MPT3SAS_EXPANDER_HANDLE_START;
@@ -505,10 +505,10 @@ static size_t mpt3sas_config_sas_io_unit_1(MPT3SASState *s, uint8_t **data, int 
     sas_iounit_pg1->NumPhys = MPT3SAS_NUM_PHYS;
 
     for (i = 0; i < MPT3SAS_NUM_PHYS; i++) {
-        sas_iounit_pg1->PhyData[i].Port = i;
+        sas_iounit_pg1->PhyData[i].Port = 0;
         sas_iounit_pg1->PhyData[i].PortFlags = 0x1;
         sas_iounit_pg1->PhyData[i].PhyFlags = 0x0;
-        sas_iounit_pg1->PhyData[i].MaxMinLinkRate = MPI25_SAS_NEG_LINK_RATE_12_0 << 4 | MPI2_SAS_NEG_LINK_RATE_1_5;
+        sas_iounit_pg1->PhyData[i].MaxMinLinkRate = MPI25_SAS_NEG_LINK_RATE_12_0 << 4 | MPI2_SAS_NEG_LINK_RATE_3_0;
         sas_iounit_pg1->PhyData[i].ControllerPhyDeviceInfo = cpu_to_le32(MPI2_SAS_DEVICE_INFO_SSP_INITIATOR | MPI2_SAS_DEVICE_INFO_SMP_INITIATOR |MPI2_SAS_DEVICE_INFO_END_DEVICE);
     }
 
@@ -539,7 +539,7 @@ static uint16_t mpt3sas_get_next_sas_device_handle(MPT3SASState *s, uint16_t han
     }
 
     if (handle == MPT3SAS_IOC_HANDLE_START + MPT3SAS_NUM_PHYS) {
-        handle = MPT3SAS_EXPANDER_HANDLE_START;
+        return MPT3SAS_EXPANDER_HANDLE_START;
     } else if (handle < MPT3SAS_ATTACHED_DEV_HANDLE_START) {
         return 0xFFFF;
     }
@@ -591,7 +591,7 @@ static uint16_t mpt3sas_get_sas_enclosure_handle(MPT3SASState *s, uint32_t page_
                 return 0xFFFF;
             }
             break;
-        case MPI2_SAS_ENCLOS_PGAD_HANDLE_MASK:
+        case MPI2_SAS_ENCLOS_PGAD_FORM_HANDLE:
             dev_handle = page_address & MPI2_SAS_ENCLOS_PGAD_HANDLE_MASK;
             break;
         default:
@@ -648,6 +648,8 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
 
         if (handle == 0xFFFF)
             return -1;
+    } else {
+        return -1;
     }
 
     DPRINTF("%s:%d device handle 0x%x\n", __func__, __LINE__, handle);
@@ -663,17 +665,17 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
     if (handle >= MPT3SAS_IOC_HANDLE_START &&
         handle < MPT3SAS_IOC_HANDLE_START + MPT3SAS_NUM_PHYS) { // ioc device
 
-        phy_id = (handle > MPT3SAS_IOC_HANDLE_START) ? handle - MPT3SAS_IOC_HANDLE_START : 0;
+        phy_id = handle - MPT3SAS_IOC_HANDLE_START;
 
-        sas_device_pg0.EnclosureHandle = 0x1;
+        sas_device_pg0.EnclosureHandle = cpu_to_le16(0x1);
         sas_device_pg0.DevHandle = cpu_to_le16(handle); 
         sas_device_pg0.PhyNum = 0x0;
         sas_device_pg0.DeviceInfo = cpu_to_le32(MPI2_SAS_DEVICE_INFO_END_DEVICE | MPI2_SAS_DEVICE_INFO_LSI_DEVICE | MPI2_SAS_DEVICE_INFO_SSP_INITIATOR | MPI2_SAS_DEVICE_INFO_SMP_INITIATOR | MPI2_SAS_DEVICE_INFO_STP_INITIATOR);
         sas_device_pg0.ParentDevHandle = 0x0;
         sas_device_pg0.PhysicalPort = 0x0;
         sas_device_pg0.SASAddress = cpu_to_le64(s->sas_address + phy_id);
-        sas_device_pg0.Flags = MPI2_SAS_DEVICE0_FLAGS_DEVICE_PRESENT;
-        //sas_device_pg0.DeviceName = cpu_to_le64(s->sas_address);
+        sas_device_pg0.Flags = cpu_to_le16(MPI2_SAS_DEVICE0_FLAGS_DEVICE_PRESENT | MPI2_SAS_DEVICE0_FLAGS_ENCL_LEVEL_VALID);
+        sas_device_pg0.DmaGroup = handle;
     } else if (handle >= MPT3SAS_ATTACHED_DEV_HANDLE_START &&
             handle < MPT3SAS_ATTACHED_DEV_HANDLE_START + MPT3SAS_EXPANDER_NUM_PHYS) { // attached sas device
 
@@ -684,7 +686,7 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
         if (d && d->wwn) {
             sas_address = d->wwn;
         } else if (d) {
-            sas_address = 0x51866da05a753a00 + 1;
+            sas_address = 0x51866da05a753a00 + phy_id;
         } else {
             sas_address = 0;
         }
@@ -695,22 +697,28 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
         sas_device_pg0.EnclosureHandle = 0x2;
         sas_device_pg0.Slot = phy_id;
         sas_device_pg0.SASAddress = cpu_to_le64(sas_address);
-        sas_device_pg0.ParentDevHandle = MPT3SAS_EXPANDER_HANDLE_START;
+        sas_device_pg0.ParentDevHandle = cpu_to_le16(MPT3SAS_EXPANDER_HANDLE_START);
         sas_device_pg0.PhyNum = phy_id;
         sas_device_pg0.DevHandle = cpu_to_le16(handle);
         sas_device_pg0.PhysicalPort = phy_id;
         sas_device_pg0.DeviceInfo = d ? cpu_to_le32(MPI2_SAS_DEVICE_INFO_SSP_TARGET | MPI2_SAS_DEVICE_INFO_END_DEVICE | MPI2_SAS_DEVICE_INFO_DIRECT_ATTACH): cpu_to_le32(MPI2_SAS_DEVICE_INFO_NO_DEVICE);
-        sas_device_pg0.Flags = d ? MPI2_SAS_DEVICE0_FLAGS_DEVICE_PRESENT : 0x0 ;
+        sas_device_pg0.Flags = d ? cpu_to_le16(MPI2_SAS_DEVICE0_FLAGS_DEVICE_PRESENT | MPI2_SAS_DEVICE0_FLAGS_ENCL_LEVEL_VALID) : 0x0;
         sas_device_pg0.DeviceName = cpu_to_le64(sas_address - 1);
+        sas_device_pg0.DmaGroup = MPT3SAS_ATTACHED_DEV_HANDLE_START;
+        sas_device_pg0.MaxPortConnections = 0x1;
     } else if (handle == MPT3SAS_EXPANDER_HANDLE_START) {
         sas_device_pg0.EnclosureHandle = 0x2;
+        sas_device_pg0.AttachedPhyIdentifier = MPT3SAS_EXPANDER_PORT_START_PHY; //TODO same with physical io controller
         sas_device_pg0.SASAddress = cpu_to_le64(0x500056b3e16208ff);
-        sas_device_pg0.ParentDevHandle = MPT3SAS_IOC_HANDLE_START;
+        sas_device_pg0.ParentDevHandle = cpu_to_le16(MPT3SAS_IOC_HANDLE_START);
         sas_device_pg0.PhyNum = 0x0;
         sas_device_pg0.PhysicalPort = 0x0;
         sas_device_pg0.DevHandle = cpu_to_le16(handle);
         sas_device_pg0.DeviceInfo = cpu_to_le32(MPI2_SAS_DEVICE_INFO_LSI_DEVICE | MPI2_SAS_DEVICE_INFO_DIRECT_ATTACH | MPI2_SAS_DEVICE_INFO_SMP_TARGET | MPI2_SAS_DEVICE_INFO_EDGE_EXPANDER);
-        sas_device_pg0.Flags = MPI2_SAS_DEVICE0_FLAGS_DEVICE_PRESENT;
+        sas_device_pg0.Flags = cpu_to_le16(MPI2_SAS_DEVICE0_FLAGS_DEVICE_PRESENT | MPI2_SAS_DEVICE0_FLAGS_ENCL_LEVEL_VALID);
+        sas_device_pg0.DmaGroup = MPT3SAS_EXPANDER_HANDLE_START;
+        sas_device_pg0.MaxPortConnections = MPT3SAS_NUM_PHYS;
+        sas_device_pg0.DeviceName = cpu_to_le64(0x500056b3e16208ff);
     } else {
         sas_device_pg0.DevHandle = 0xFFFF;
         sas_device_pg0.ParentDevHandle = 0xFFFF;
@@ -719,6 +727,7 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
 
     if (data) {
         *data = g_malloc(sizeof(sas_device_pg0));
+        memset(*data, 0, sizeof(sas_device_pg0));
         memcpy(*data, &sas_device_pg0, sizeof(sas_device_pg0));
     }
 
@@ -728,7 +737,7 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
 static size_t mpt3sas_config_sas_phy_0(MPT3SASState *s, uint8_t **data, int address)
 {
     Mpi2SasPhyPage0_t sas_phy_pg0;
-    //uint32_t phy_number = address & MPI2_SAS_PHY_PGAD_PHY_NUMBER_MASK; 
+    uint32_t phy_number = 0;
     //SCSIDevice  *d = scsi_device_find(&s->bus, 0, phy_number, 0);
     uint32_t form = address & MPI2_SAS_PHY_PGAD_FORM_MASK;
 
@@ -737,6 +746,7 @@ static size_t mpt3sas_config_sas_phy_0(MPT3SASState *s, uint8_t **data, int addr
 
     if (form == MPI2_SAS_PHY_PGAD_FORM_PHY_NUMBER) {
         trace_mpt3sas_handle_config_sas_phy_0(form, address & MPI2_SAS_PHY_PGAD_PHY_NUMBER_MASK);
+        phy_number = address & MPI2_SAS_PHY_PGAD_PHY_NUMBER_MASK; 
     } else if (form == MPI2_SAS_PHY_PGAD_FORM_PHY_TBL_INDEX) {
         trace_mpt3sas_handle_config_sas_phy_0(form, address & MPI2_SAS_PHY_PGAD_PHY_TBL_INDEX_MASK);
     }
@@ -752,7 +762,7 @@ static size_t mpt3sas_config_sas_phy_0(MPT3SASState *s, uint8_t **data, int addr
     sas_phy_pg0.AttachedDevHandle = MPT3SAS_EXPANDER_HANDLE_START;
     sas_phy_pg0.AttachedPhyInfo = MPI2_SAS_APHYINFO_REASON_POWER_ON;
     //if it's an expander device, then we should set, or set 0.
-    sas_phy_pg0.AttachedPhyIdentifier = 0x0;
+    sas_phy_pg0.AttachedPhyIdentifier = MPT3SAS_EXPANDER_PORT_START_PHY + phy_number;
     sas_phy_pg0.HwLinkRate = MPI25_SAS_NEG_LINK_RATE_12_0 << 4 | MPI2_SAS_NEG_LINK_RATE_1_5;
     sas_phy_pg0.NegotiatedLinkRate = MPI25_SAS_NEG_LINK_RATE_12_0;
     sas_phy_pg0.ProgrammedLinkRate = MPI25_SAS_NEG_LINK_RATE_12_0 << 4 | MPI2_SAS_NEG_LINK_RATE_1_5;
@@ -810,6 +820,7 @@ static size_t mpt3sas_config_sas_expander_1(MPT3SASState *s, uint8_t **data, int
     //if (phy_id > MPT3SAS_EXPANDER_NUM_PHYS)
     //    return -1;
 
+    memset(&exp_pg1, 0, sizeof(exp_pg1));
     exp_pg1.Header.PageVersion = MPI2_SASEXPANDER1_PAGEVERSION;
     exp_pg1.Header.PageNumber = 0x1;
     exp_pg1.Header.PageType = MPI2_CONFIG_PAGETYPE_EXTENDED;
@@ -1363,7 +1374,7 @@ static void mpt3sas_handle_ioc_facts(MPT3SASState *s, uint16_t smid, uint8_t msi
     reply.IOCLogInfo = 0;
     reply.MaxChainDepth = MPT3SAS_MAX_CHAIN_DEPTH;
     reply.WhoInit = s->who_init;
-    reply.NumberOfPorts = MPT3SAS_NUM_PHYS;
+    reply.NumberOfPorts = 0x1;
     reply.MaxMSIxVectors = MPT3SAS_MAX_MSIX_VECTORS;
     reply.RequestCredit = cpu_to_le16(MPT3SAS_MAX_OUTSTANDING_REQUESTS);
     reply.ProductID = cpu_to_le16(MPT3SAS_LSI3008_PRODUCT_ID);
@@ -1600,6 +1611,9 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_i
 
     length = page->mpt_config_build(s, &data, le32_to_cpu(req->PageAddress));
 
+    //DPRINTF("%s:%d dmalen %d length %d\n", __func__, __LINE__, dmalen, (int)length);
+    //assert(dmalen >= length);
+
     if (1 && data) {
         uint8_t i = 0;
         for (i = 0; i < length; i++) {
@@ -1635,14 +1649,10 @@ done:
     }
 
 out:
-    /*
     if (reply.IOCStatus != MPI2_IOCSTATUS_SUCCESS) {
         reply.Header.PageLength = 0;
-        reply.Header.PageType = 0;
         reply.ExtPageLength = 0;
-        reply.ExtPageType = 0;
     }
-    */
 
     mpt3sas_post_reply(s, smid, msix_index, (MPI2DefaultReply_t *)&reply);
     if (data)
