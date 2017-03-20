@@ -508,7 +508,7 @@ static size_t mpt3sas_config_sas_io_unit_1(MPT3SASState *s, uint8_t **data, int 
         sas_iounit_pg1->PhyData[i].Port = 0;
         sas_iounit_pg1->PhyData[i].PortFlags = 0x1;
         sas_iounit_pg1->PhyData[i].PhyFlags = 0x0;
-        sas_iounit_pg1->PhyData[i].MaxMinLinkRate = MPI25_SAS_NEG_LINK_RATE_12_0 << 4 | MPI2_SAS_NEG_LINK_RATE_3_0;
+        sas_iounit_pg1->PhyData[i].MaxMinLinkRate = MPI25_SASIOUNIT1_MAX_RATE_12_0 | MPI2_SASIOUNIT1_MIN_RATE_3_0;
         sas_iounit_pg1->PhyData[i].ControllerPhyDeviceInfo = cpu_to_le32(MPI2_SAS_DEVICE_INFO_SSP_INITIATOR | MPI2_SAS_DEVICE_INFO_SMP_INITIATOR |MPI2_SAS_DEVICE_INFO_END_DEVICE);
     }
 
@@ -652,8 +652,6 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
         return -1;
     }
 
-    DPRINTF("%s:%d device handle 0x%x\n", __func__, __LINE__, handle);
-
     memset(&sas_device_pg0, 0, sizeof(sas_device_pg0));
     sas_device_pg0.Header.PageVersion = MPI2_SASDEVICE0_PAGEVERSION;
     sas_device_pg0.Header.PageNumber = 0x0;
@@ -763,9 +761,9 @@ static size_t mpt3sas_config_sas_phy_0(MPT3SASState *s, uint8_t **data, int addr
     sas_phy_pg0.AttachedPhyInfo = MPI2_SAS_APHYINFO_REASON_POWER_ON;
     //if it's an expander device, then we should set, or set 0.
     sas_phy_pg0.AttachedPhyIdentifier = MPT3SAS_EXPANDER_PORT_START_PHY + phy_number;
-    sas_phy_pg0.HwLinkRate = MPI25_SAS_NEG_LINK_RATE_12_0 << 4 | MPI2_SAS_NEG_LINK_RATE_1_5;
+    sas_phy_pg0.HwLinkRate = MPI25_SAS_HWRATE_MAX_RATE_12_0 | MPI2_SAS_HWRATE_MIN_RATE_3_0;
     sas_phy_pg0.NegotiatedLinkRate = MPI25_SAS_NEG_LINK_RATE_12_0;
-    sas_phy_pg0.ProgrammedLinkRate = MPI25_SAS_NEG_LINK_RATE_12_0 << 4 | MPI2_SAS_NEG_LINK_RATE_1_5;
+    sas_phy_pg0.ProgrammedLinkRate = MPI25_SAS_PRATE_MAX_RATE_12_0 | MPI2_SAS_PRATE_MIN_RATE_3_0;
     sas_phy_pg0.Flags = 0x0;
     sas_phy_pg0.PhyInfo = MPI2_SAS_PHYINFO_REASON_POWER_ON;
 
@@ -779,15 +777,14 @@ static size_t mpt3sas_config_sas_phy_0(MPT3SASState *s, uint8_t **data, int addr
 static size_t mpt3sas_config_sas_expander_0(MPT3SASState *s, uint8_t **data, int address)
 {
     Mpi2ExpanderPage0_t exp_pg0;
-    uint16_t dev_handle = 0;
+    //uint16_t dev_handle = 0;
 
-    dev_handle = mpt3sas_get_sas_expander_handle(s, address);
+    //dev_handle = mpt3sas_get_sas_expander_handle(s, address);
     memset(&exp_pg0, 0, sizeof(exp_pg0));
 
     //if (dev_handle != MPT3SAS_EXPANDER_HANDLE_START)
     //    return -1;
 
-    DPRINTF("%s:%d dev_handle %x\n", __func__, __LINE__, dev_handle);
     exp_pg0.Header.PageVersion = MPI2_SASEXPANDER0_PAGEVERSION;
     exp_pg0.Header.PageNumber = 0x0;
     exp_pg0.Header.PageType = MPI2_CONFIG_PAGETYPE_EXTENDED;
@@ -830,8 +827,8 @@ static size_t mpt3sas_config_sas_expander_1(MPT3SASState *s, uint8_t **data, int
     exp_pg1.NumPhys = MPT3SAS_EXPANDER_NUM_PHYS;
     exp_pg1.Phy = phy_id;
     exp_pg1.NumTableEntriesProgrammed = 0x0;
-    exp_pg1.ProgrammedLinkRate = MPI25_SAS_PRATE_MAX_RATE_12_0 | MPI2_SAS_PRATE_MIN_RATE_1_5;
-    exp_pg1.HwLinkRate = MPI25_SAS_HWRATE_MAX_RATE_12_0 | MPI2_SAS_HWRATE_MIN_RATE_1_5;
+    exp_pg1.ProgrammedLinkRate = MPI25_SAS_PRATE_MAX_RATE_12_0 | MPI2_SAS_PRATE_MIN_RATE_3_0;
+    exp_pg1.HwLinkRate = MPI25_SAS_HWRATE_MAX_RATE_12_0 | MPI2_SAS_HWRATE_MIN_RATE_3_0;
 
     if (phy_id < MPT3SAS_EXPANDER_PORT_START_PHY) {
         SCSIDevice *dev = mpt3sas_phy_get_device(s, phy_id, &dev_handle);
@@ -883,12 +880,13 @@ static size_t mpt3sas_config_enclosure_0(MPT3SASState *s, uint8_t **data, int ad
 
     if (handle == 0x1) {
         sas_enclosure_pg0.EnclosureLogicalID = s->sas_address;
+        sas_enclosure_pg0.NumSlots = 0x8; 
     } else {
         sas_enclosure_pg0.EnclosureLogicalID = 0x500056b31234abff;
+        sas_enclosure_pg0.NumSlots = 20; 
     }
     sas_enclosure_pg0.Flags = 0x0;
     sas_enclosure_pg0.EnclosureHandle = handle;
-    sas_enclosure_pg0.NumSlots = 0x0; 
     sas_enclosure_pg0.StartSlot = 0x0;
     sas_enclosure_pg0.EnclosureLevel = 0x0;
     sas_enclosure_pg0.SEPDevHandle = 0x0;
@@ -1611,19 +1609,23 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_i
 
     length = page->mpt_config_build(s, &data, le32_to_cpu(req->PageAddress));
 
-    //DPRINTF("%s:%d dmalen %d length %d\n", __func__, __LINE__, dmalen, (int)length);
-    //assert(dmalen >= length);
-
-    if (1 && data) {
+    if (data) {
         uint8_t i = 0;
+        char buf[1024] = {0};
+        uint32_t buf_len = 0;
+
+        buf_len += sprintf(buf + buf_len, "Page(%x/%x/%x) Ext Page(%x/%x) Page Address 0x%x: \n",
+                req->Header.PageType, req->Header.PageNumber, req->Header.PageLength,
+                req->ExtPageType, req->ExtPageLength, req->PageAddress);
         for (i = 0; i < length; i++) {
             if (i && (i % 8) == 0) {
-                qemu_log_mask(LOG_TRACE, "\n");
+                buf_len += sprintf(buf + buf_len, "\n");
             }
 
-            qemu_log_mask(LOG_TRACE, "%02x ", data[i]);
+            buf_len += sprintf(buf + buf_len, "%02x ", data[i]);
         }
-        qemu_log_mask(LOG_TRACE, "\n");
+        buf_len += sprintf(buf + buf_len, "\n");
+        trace_mpt3sas_dump_buffer(buf);
     }
 
     if ((ssize_t)length < 0) {
@@ -1741,20 +1743,17 @@ static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr a
     return 0;
 }
 
-static void __attribute__((unused)) dump_cdb(uint8_t *buf)
+static void dump_cdb(uint8_t *buf, int len)
 {
-    int length = scsi_cdb_length(buf);
+    int cdb_len = 0;
+    char cdb[32] = {0};
+    int i = 0;
 
-    switch (length) {
-        case 10:
-            trace_mpt3sas_scsi_command_cdb10(buf[0], buf[1], buf[2], buf[3], buf[4], buf[5],
-                    buf[6], buf[7], buf[8], buf[9]);
-            break;
-        default:
-            trace_mpt3sas_scsi_command_cdb16(buf[0], buf[1], buf[2], buf[3], buf[4], buf[5],
-                    buf[6], buf[7], buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]);
-            break;
+    for (i = 0; i < len; i++) {
+        cdb_len += sprintf(cdb + cdb_len, "%02x ", buf[i]);
     }
+
+    trace_mpt3sas_scsi_command_cdb(len, cdb);
 }
 
 static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, uint8_t msix_index, Mpi25SCSIIORequest_t *req, hwaddr addr)
@@ -1765,7 +1764,13 @@ static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, uint8_
     SCSIDevice *sdev;
     Mpi2SCSIIOReply_t reply;
 
-    trace_mpt3sas_scsi_io_request(req->DevHandle, req->LUN[1], req->DataLength, req->Control, smid);
+    trace_mpt3sas_scsi_io_request(req->DevHandle, req->LUN[1], req->SkipCount,
+            req->DataLength,
+            req->BidirectionalDataLength,
+            req->IoFlags,
+            req->EEDPFlags,
+            req->EEDPBlockSize,
+            req->Control, smid);
     mpt3sas_print_scsi_devices(&s->bus);
     status = mpt3sas_scsi_device_find(s, req->DevHandle, req->LUN, &sdev);
     if (status) {
@@ -1779,7 +1784,6 @@ static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, uint8_
     mpt3sas_req->smid = smid;
     mpt3sas_req->msix_index = msix_index;
     trace_mpt3sas_scsi_io_command_info(req, req->CDB.CDB32[0], smid);
-    dump_cdb(req->CDB.CDB32);
 
     status = mpt3sas_build_ieee_sgl(s, mpt3sas_req, addr);
     if (status) {
@@ -1793,8 +1797,11 @@ static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, uint8_
         goto free_bad;
     }
 
+    dump_cdb(req->CDB.CDB32, req->IoFlags & 0xff);
+
     mpt3sas_req->sreq = scsi_req_new(sdev, 0, req->LUN[1], req->CDB.CDB32, mpt3sas_req);
 
+#if 0
     if (mpt3sas_req->sreq->cmd.xfer > req->DataLength)
         goto overrun;
 
@@ -1812,6 +1819,7 @@ static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, uint8_
             goto overrun;
         break;
     }
+#endif
 
     if (scsi_req_enqueue(mpt3sas_req->sreq)) {
         scsi_req_continue(mpt3sas_req->sreq);
@@ -1819,7 +1827,8 @@ static int mpt3sas_handle_scsi_io_request(MPT3SASState *s, uint16_t smid, uint8_
 
     return 0;
 
-overrun:
+//overrun:
+    trace_mpt3sas_scsi_io_overrun(sdev->wwn, req->Control, req->DataLength, mpt3sas_req->sreq->cmd.xfer, mpt3sas_req->sreq->cmd.mode);
     status = MPI2_IOCSTATUS_SCSI_DATA_OVERRUN;
 free_bad:
     mpt3sas_free_request(mpt3sas_req);
@@ -2387,18 +2396,20 @@ static void mpt3sas_handle_request(MPT3SASState *s)
         assert(size <= MPT3SAS_REQUEST_FRAME_SIZE * 4);
         pci_dma_read(pci, addr + sizeof(hdr), &req[sizeof(hdr)],
                 size - sizeof(hdr));
-        if (1) {
+        if (size > 0) {
             uint32_t i = 0;
-            //DEBUG information
-            DPRINTF("Request (0x%lx/0x%x):\n", addr, size);
-            DPRINTF("-------------------\n");
+            int buf_len = 0;
+            char buf[1024] = {0};
+            
+            buf_len += sprintf(buf + buf_len, "Request (0x%lx/0x%x): \n", addr, size);
             for (i = 0; i < size; i++) {
                 if (i && (i % 8 == 0)) {
-                    qemu_log_mask(LOG_TRACE, "\n");
+                    buf_len += sprintf(buf + buf_len, "\n");
                 }
-                qemu_log_mask(LOG_TRACE, "%02x ", req[i]);
+                buf_len += sprintf(buf + buf_len, "%02x ", req[i]);
             }
-            qemu_log_mask(LOG_TRACE, "\n");
+            buf_len += sprintf(buf + buf_len, "\n");
+            trace_mpt3sas_dump_buffer(buf);
         }
     }
 
@@ -2805,7 +2816,7 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
             reply.IOCStatus = MPI2_IOCSTATUS_SCSI_DATA_UNDERRUN;
         }
 
-        trace_mpt3sas_scsi_io_command_error(req, req->scsi_io.CDB.CDB32[0], req->smid, sreq->status);
+        trace_mpt3sas_scsi_io_command_error(sreq->dev->wwn, req, req->scsi_io.CDB.CDB32[0], req->smid, sreq->status);
         mpt3sas_post_reply(s, req->smid, req->msix_index, (MPI2DefaultReply_t *)&reply);
         mpt3sas_free_request(req);
     } else {
@@ -2874,16 +2885,25 @@ static void *mpt3sas_load_request(QEMUFile *f, SCSIRequest *sreq)
 {
     return NULL;
 }
+
+static int mpt3sas_parse_cdb(SCSIDevice *dev, SCSICommand *cmd, uint8_t *buf, void *hba_private)
+{
+    if (buf[0] == ATA_PASSTHROUGH_12 || buf[0] == ATA_PASSTHROUGH_16)
+        return -1;
+
+    return scsi_req_parse_cdb(dev, cmd, buf);
+}
 #endif
 
 static const struct SCSIBusInfo mpt3sas_scsi_info = {
     .tcq = true,
-    .max_target = MPT3SAS_NUM_PHYS,
+    .max_target = 20,
     .max_lun = 1,
 
     .get_sg_list = mpt3sas_get_ieee_sg_list,
     .complete = mpt3sas_command_complete,
     .cancel = mpt3sas_request_cancelled,
+//    .parse_cdb = mpt3sas_parse_cdb,
 //    .save_request = mpt3sas_save_request,
 //    .load_request = mpt3sas_load_request,
 
@@ -3034,12 +3054,12 @@ static void mpt3sas3008_class_init(ObjectClass *oc, void *data)
     pc->device_id = MPI25_MFGPAGE_DEVID_SAS3008;
 
     // DELL ID
-    //pc->subsystem_vendor_id = 0x1f53; //Dell
-    //pc->subsystem_id = 0x1028;
+    pc->subsystem_vendor_id = 0x1f53; //Dell
+    pc->subsystem_id = 0x1028;
 
     // DEFAULT ID
-    pc->subsystem_vendor_id = 0x1000; 
-    pc->subsystem_id = 0x80;
+    //pc->subsystem_vendor_id = 0x1000; 
+    //pc->subsystem_id = 0x80;
     pc->revision = 0x2; 
     //pc->class_id = PCI_CLASS_STORAGE_SCSI;
     pc->class_id = 0x107;

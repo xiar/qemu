@@ -815,6 +815,10 @@ static int scsi_disk_emulate_inquiry(SCSIRequest *req, uint8_t *outbuf)
         outbuf[4] = 36 - 5;
     }
 
+    if (s->serial) {
+        memcpy(&outbuf[36], s->serial, strlen(s->serial));
+    }
+
     /* Sync data transfer and TCQ.  */
     outbuf[7] = 0x10 | (req->bus->info->tcq ? 0x02 : 0);
     return buflen;
