@@ -30,6 +30,16 @@
 
 #define MPT3SAS_ENCLOSURE_HANDLE_START (0x1)
 
+#define MPT3SAS_EXPANDER_DEFAULT_SAS_ADDR   (0x500056b3e16208ff)
+
+#define MPT3SAS_DRIVE_DEFAULT_SAS_ADDR      (0x51866da05a753a00)
+
+#define MPT3SAS_IOC_ENCLOSURE_HANDLE (0x1)
+#define MPT3SAS_EXPANDER_ENCLOSURE_HANDLE (0x2)
+
+#define MPT3SAS_IOC_NUM_SLOTS   MPT3SAS_NUM_PHYS
+#define MPT3SAS_EXPANDER_NUM_SLOTS  (MPT3SAS_EXPANDER_NUM_PHYS - MPT3SAS_NUM_PHYS)
+
 typedef struct MPT3SASState MPT3SASState;
 
 enum {
@@ -80,6 +90,21 @@ typedef struct MPT3SASEventQueue {
     bool exit;
     QTAILQ_HEAD(, MPT3SASEvent) events;
 } MPT3SASEventQueue;
+
+typedef struct Mpi2ManufacturingPage10_t {
+    MPI2_CONFIG_PAGE_HEADER Header;
+    U8 OEMIdentifier;
+    U8 Reserved1;
+    U16 Reserved2;
+    U32 Reserved3;
+    U32 GenericFlags0;
+    U32 GenericFlags1;
+    U32 Reserved4;
+    U32 OEMSpecificFlags0;
+    U32 OEMSpecificFlags1;
+    U32 Reserved5[18];
+} Mpi2ManufacturingPage10_t;
+
 
 struct MPT3SASState {
     PCIDevice dev;
@@ -147,10 +172,6 @@ struct MPT3SASState {
     hwaddr reply_free_queue_address;
     uint64_t time_stamp;
 
-    // internal use
-    uint16_t controller_dev_handle;
-    Mpi2SasIOUnitPage0_t sas_iounit_pg0;
-
     uint64_t sas_address;
 
     MPT3SASRequest *completed_queue[MPT3SAS_MAX_REPLY_DESCRIPTOR_QUEUE_DEPTH + 1];
@@ -160,7 +181,6 @@ struct MPT3SASState {
 
     MPT3SASEventQueue *event_queue;
 
-    uint16_t event_ack;
     SCSIBus bus;
     QTAILQ_HEAD(, MPT3SASRequest) pending;
     QEMUBH *completed_request_bh;
