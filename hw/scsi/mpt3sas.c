@@ -220,6 +220,29 @@ static size_t mpt3sas_config_manufacturing_0(MPT3SASState *s, uint8_t **data, in
     return sizeof(man_pg0);
 }
 
+static size_t mpt3sas_config_manufacturing_3(MPT3SASState *s, uint8_t **data, int address)
+{
+    Mpi2ManufacturingPage3_t man_pg3;
+
+    if (!data)
+        return sizeof(man_pg3);
+
+    memset(&man_pg3, 0, sizeof(man_pg3));
+    man_pg3.Header.PageVersion = MPI2_MANUFACTURING4_PAGEVERSION;
+    man_pg3.Header.PageLength = sizeof(man_pg3) / 4;
+    man_pg3.Header.PageNumber = 0x3;
+    man_pg3.Header.PageType = MPI2_CONFIG_PAGETYPE_MANUFACTURING;
+
+    // TODO: get real data from hw
+    man_pg3.ChipId.DeviceID = MPI25_MFGPAGE_DEVID_SAS3008;
+    man_pg3.ChipId.PCIRevisionID = 0x01;
+
+    if (data) {
+        *data = g_malloc(sizeof(man_pg3));
+        memcpy(*data, &man_pg3, sizeof(man_pg3));
+    }
+    return sizeof(man_pg3);
+}
 
 static size_t mpt3sas_config_manufacturing_4(MPT3SASState *s, uint8_t **data, int address)
 {
@@ -423,6 +446,40 @@ static size_t mpt3sas_config_io_unit_1(MPT3SASState *s, uint8_t **data, int addr
     }
     
     return sizeof(iounit_pg1);
+}
+
+static size_t mpt3sas_config_io_unit_7(MPT3SASState *s, uint8_t **data, int address)
+{
+    Mpi2IOUnitPage7_t iounit_pg7;
+
+    if (!data)
+        return sizeof(iounit_pg7);
+
+    memset(&iounit_pg7, 0, sizeof(iounit_pg7));
+    iounit_pg7.Header.PageVersion = MPI2_IOUNITPAGE8_PAGEVERSION;
+    iounit_pg7.Header.PageNumber = 0x7;
+    iounit_pg7.Header.PageType = MPI2_CONFIG_PAGETYPE_IO_UNIT;
+
+    iounit_pg7.CurrentPowerMode = MPI25_IOUNITPAGE7_PM_INIT_HOST | MPI25_IOUNITPAGE7_PM_MODE_FULL_POWER;
+    iounit_pg7.PreviousPowerMode = MPI25_IOUNITPAGE7_PM_INIT_HOST | MPI25_IOUNITPAGE7_PM_MODE_FULL_POWER;
+    iounit_pg7.PCIeWidth = MPI2_IOUNITPAGE7_PCIE_WIDTH_X8;
+    iounit_pg7.PCIeSpeed = MPI2_IOUNITPAGE7_PCIE_SPEED_8_0_GBPS;
+    iounit_pg7.ProcessorState = MPI2_IOUNITPAGE7_PSTATE_ENABLED;
+    iounit_pg7.PowerManagementCapabilities = MPI25_IOUNITPAGE7_PMCAP_HOST_FULL_PWR_MODE|MPI25_IOUNITPAGE7_PMCAP_HOST_REDUCED_PWR_MODE;
+    iounit_pg7.IOCTemperature = MPI2_IOUNITPAGE7_IOC_TEMP_CELSIUS;
+    iounit_pg7.IOCTemperatureUnits = 1;
+    iounit_pg7.IOCSpeed = MPI2_IOUNITPAGE7_IOC_SPEED_FULL;
+    iounit_pg7.BoardTemperature = MPI2_IOUNITPAGE7_BOARD_TEMP_CELSIUS;
+    // reserved in spec
+    //iounit_pg7.BoardTemperatureUnits = 1;
+    //iounit_pg7.BoardPowerRequirement = 1;
+
+    if (data) {
+        *data = g_malloc(sizeof(iounit_pg7));
+        memcpy(*data, &iounit_pg7, sizeof(iounit_pg7));
+    }
+
+    return sizeof(iounit_pg7);
 }
 
 static size_t mpt3sas_config_io_unit_8(MPT3SASState *s, uint8_t **data, int address)
@@ -774,6 +831,35 @@ static size_t mpt3sas_config_sas_phy_0(MPT3SASState *s, uint8_t **data, int addr
     return sizeof(sas_phy_pg0);
 }
 
+static size_t mpt3sas_config_sas_phy_1(MPT3SASState *s, uint8_t **data, int address)
+{
+    Mpi2SasPhyPage1_t sas_phy_pg1;
+    //TODO: Get real data for specified PHY
+    //uint32_t phy_number = address;
+    //SCSIDevice  *d = scsi_device_find(&s->bus, 0, phy_number, 0);
+
+    if (!data)
+        return sizeof(sas_phy_pg1);
+
+    memset(&sas_phy_pg1, 0, sizeof(sas_phy_pg1));
+    sas_phy_pg1.Header.PageVersion = MPI2_SASPHY0_PAGEVERSION;
+    sas_phy_pg1.Header.PageNumber = 0x1;
+    sas_phy_pg1.Header.PageType = MPI2_CONFIG_PAGETYPE_EXTENDED;
+    sas_phy_pg1.Header.ExtPageLength = sizeof(sas_phy_pg1) / 4;
+    sas_phy_pg1.Header.ExtPageType = MPI2_CONFIG_EXTPAGETYPE_SAS_PHY;
+
+    sas_phy_pg1.InvalidDwordCount = 0x0;
+    sas_phy_pg1.RunningDisparityErrorCount= 0x0;
+    sas_phy_pg1.LossDwordSynchCount= 0x0;
+    sas_phy_pg1.PhyResetProblemCount = 0x0;
+
+    if (data) {
+        *data = g_malloc(sizeof(sas_phy_pg1));
+        memcpy(*data, &sas_phy_pg1, sizeof(sas_phy_pg1));
+    }
+    return sizeof(sas_phy_pg1);
+}
+
 static size_t mpt3sas_config_sas_expander_0(MPT3SASState *s, uint8_t **data, int address)
 {
     Mpi2ExpanderPage0_t exp_pg0;
@@ -905,6 +991,10 @@ static const MPT3SASConfigPage mpt3sas_config_pages[] = {
         mpt3sas_config_manufacturing_0,
     },
     {
+        3, MPI2_CONFIG_PAGETYPE_MANUFACTURING,
+        mpt3sas_config_manufacturing_3,
+    },
+    {
         4, MPI2_CONFIG_PAGETYPE_MANUFACTURING,
         mpt3sas_config_manufacturing_4,
     },
@@ -941,6 +1031,10 @@ static const MPT3SASConfigPage mpt3sas_config_pages[] = {
         mpt3sas_config_io_unit_1,
     },
     {
+        7, MPI2_CONFIG_PAGETYPE_IO_UNIT,
+        mpt3sas_config_io_unit_7,
+    },
+    {
         8, MPI2_CONFIG_PAGETYPE_IO_UNIT,
         mpt3sas_config_io_unit_8,
     },
@@ -959,6 +1053,10 @@ static const MPT3SASConfigPage mpt3sas_config_pages[] = {
     {
         0, MPI2_CONFIG_EXTPAGETYPE_SAS_PHY,
         mpt3sas_config_sas_phy_0,
+    },
+    {
+        1, MPI2_CONFIG_EXTPAGETYPE_SAS_PHY,
+        mpt3sas_config_sas_phy_1,
     },
     {
         0, MPI2_CONFIG_EXTPAGETYPE_SAS_EXPANDER,
@@ -3054,8 +3152,9 @@ static void mpt3sas3008_class_init(ObjectClass *oc, void *data)
     pc->device_id = MPI25_MFGPAGE_DEVID_SAS3008;
 
     // DELL ID
-    pc->subsystem_vendor_id = 0x1f53; //Dell
-    pc->subsystem_id = 0x1028;
+    // http://pciids.sourceforge.net/v2.2/pci.ids
+    pc->subsystem_vendor_id = 0x1028; //Dell
+    pc->subsystem_id = 0x1f46;
 
     // DEFAULT ID
     //pc->subsystem_vendor_id = 0x1000; 
