@@ -1871,7 +1871,7 @@ static int mpt3sas_build_ieee_sgl(MPT3SASState *s, MPT3SASRequest *req, hwaddr a
 static void dump_cdb(uint8_t *buf, int len)
 {
     int cdb_len = 0;
-    char cdb[32] = {0};
+    char cdb[256] = {0};
     int i = 0;
 
     for (i = 0; i < len; i++) {
@@ -2610,21 +2610,16 @@ static void mpt3sas_handle_completed_request(void *opaque)
 
         // If no interrupt is raised within 500ms, then raise an interrupt for host driver to
         // call ISR, and avoid request timeout.
-        if (s->msix_in_use) {
-            mpt3sas_msix_notify(s, req->msix_index);
+        delta = (now.tv_sec * 1000 * 1000 + now.tv_usec) - (start.tv_sec * 1000 * 1000 + now.tv_usec);
+        if (delta > 500000 && processed > 0 && !(s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)) {
+            s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
+            mpt3sas_update_interrupt(s);
+
             processed = 0;
-        } else {
-            delta = (now.tv_sec * 1000 * 1000 + now.tv_usec) - (start.tv_sec * 1000 * 1000 + now.tv_usec);
-            if (delta > 500000 && processed > 0 && !(s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)) {
-                s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
-                mpt3sas_update_interrupt(s);
 
-                processed = 0;
-
-                //update start
-                gettimeofday(&start, NULL);
-            }
-        }
+            //update start
+            gettimeofday(&start, NULL);
+         }
     }
 
     //DPRINTF("%s:%d processed %d intr_status 0x%08x reply post queue len 0x%x\n",
@@ -2913,7 +2908,7 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
 
         sense_len = scsi_req_get_sense(sreq, sense_buf, SCSI_SENSE_BUF_SIZE);
         if (sense_len > 0) {
-            trace_mpt3sas_scsi_io_command_sense_data(sense_buf[0] & 0x7f, sense_buf[1] & 0xf, sense_buf[2], sense_buf[3]);
+            trace_mpt3sas_scsi_io_command_sense_data(sense_buf[0] & 0x7f, sense_buf[2] & 0xf, sense_buf[12], sense_buf[13]);
             pci_dma_write(PCI_DEVICE(s), sense_buffer_addr, sense_buf,
                     MIN(req->scsi_io.SenseBufferLength, sense_len));
         }
@@ -2937,9 +2932,10 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
             reply.SCSIState = MPI2_SCSI_STATE_AUTOSENSE_VALID;
             reply.SenseCount = sense_len;
             reply.IOCStatus = MPI2_IOCSTATUS_SCSI_DATA_UNDERRUN;
+            dump_cdb(req->scsi_io.CDB.CDB32, req->scsi_io.IoFlags & 0xff);
+            trace_mpt3sas_scsi_io_command_error(sreq->dev->wwn, req, req->scsi_io.CDB.CDB32[0], req->smid, sreq->status);
         }
 
-        trace_mpt3sas_scsi_io_command_error(sreq->dev->wwn, req, req->scsi_io.CDB.CDB32[0], req->smid, sreq->status);
         mpt3sas_post_reply(s, req->smid, req->msix_index, (MPI2DefaultReply_t *)&reply);
         mpt3sas_free_request(req);
     } else {
@@ -2955,10 +2951,17 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
 
         trace_mpt3sas_scsi_io_add_command(req, req->scsi_io.CDB.CDB32[0], req->smid, lba);
 
-        //mpt3sas_scsi_io_reply(s, req->smid);
-        s->completed_queue[s->completed_queue_tail++] = req;
-        s->completed_queue_tail %= ARRAY_SIZE(s->completed_queue);
-        qemu_bh_schedule(s->completed_request_bh);
+        if (s->msix_in_use)  {
+            trace_mpt3sas_scsi_io_command_completed(req, req->smid, req->scsi_io.CDB.CDB32[0], s->completed_commands);
+            mpt3sas_scsi_io_reply(s, req->smid, req->msix_index); 
+            mpt3sas_free_request(req);
+            mpt3sas_msix_notify(s, req->msix_index);
+        } else {
+            //mpt3sas_scsi_io_reply(s, req->smid);
+            s->completed_queue[s->completed_queue_tail++] = req;
+            s->completed_queue_tail %= ARRAY_SIZE(s->completed_queue);
+            qemu_bh_schedule(s->completed_request_bh);
+        }
     }
     
 }
@@ -3086,10 +3089,7 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
     if (pci_is_express(dev)) {
         int pos = 0;
 
-        // PCIE capabilities 
-        if (pci_bus_is_express(dev->bus)) {
-            pos = pcie_endpoint_cap_init(dev, 0x68);
-        }
+        pos = pcie_endpoint_cap_init(dev, 0x68);
 
         // Power Management
         pos = pci_add_capability(dev, PCI_CAP_ID_PM, 0x50, PCI_PM_SIZEOF);
