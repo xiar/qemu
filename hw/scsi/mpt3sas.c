@@ -51,6 +51,9 @@
 
 #define DEBUG_MPT3SAS   1
 
+#define MAX_SCSI_TARGETS    (255)
+#define MAX_SCSI_LUNS        (1)
+
 static uint32_t ioc_reset_sequence[] = {
     MPI2_WRSEQ_1ST_KEY_VALUE,
     MPI2_WRSEQ_2ND_KEY_VALUE,
@@ -724,7 +727,7 @@ static uint16_t mpt3sas_get_next_sas_device_handle(MPT3SASState *s, uint16_t han
         return 0xFFFF;
     }
 
-    while (handle < MPT3SAS_ATTACHED_DEV_HANDLE_START + s->expander.all_phys) {
+    while (handle < MPT3SAS_ATTACHED_DEV_HANDLE_START + s->expander.all_phys * s->expander.count) {
         if (scsi_device_find(&s->bus, 0, handle - MPT3SAS_ATTACHED_DEV_HANDLE_START, 0)) {
             return handle;
         }
@@ -875,7 +878,7 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
         sas_device_pg0.Flags = cpu_to_le16(MPI2_SAS_DEVICE0_FLAGS_DEVICE_PRESENT | MPI2_SAS_DEVICE0_FLAGS_ENCL_LEVEL_VALID);
         sas_device_pg0.DmaGroup = handle;
     } else if (handle >= MPT3SAS_ATTACHED_DEV_HANDLE_START &&
-            handle < MPT3SAS_ATTACHED_DEV_HANDLE_START + s->expander.all_phys) { // attached sas device
+            handle < MPT3SAS_ATTACHED_DEV_HANDLE_START + s->expander.all_phys * s->expander.count) { // attached sas device
 
         uint64_t sas_address = 0;
         uint32_t dev_num = 0;
@@ -894,7 +897,7 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
 
         trace_mpt3sas_query_scsi_target_info(handle, dev_num, sas_address);
 
-        expander_idx = dev_num % s->expander.downstream_phys;
+        expander_idx = dev_num / s->expander.downstream_phys;
 
         sas_device_pg0.EnclosureHandle = MPT3SAS_EXPANDER_ENCLOSURE_HANDLE + expander_idx;
         sas_device_pg0.Slot = dev_num % s->expander.downstream_phys;
@@ -2544,9 +2547,9 @@ static void mpt3sas_phy_change_list_event_enqueue(MPT3SASState *s, uint16_t encl
     mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST, event_data2);
 }
 
-static void mpt3sas_disk_change_list_event_enqueue(MPT3SASState *s, uint16_t enclosure_handle,
+static int mpt3sas_disk_change_list_event_enqueue(MPT3SASState *s, uint16_t enclosure_handle,
                                             uint16_t expander_dev_handle, uint32_t num_phys,
-                                            uint32_t start_phy_num, uint32_t exp_status,
+                                            uint32_t start_dev_idx, uint32_t exp_status,
                                             uint32_t physical_port, uint32_t phy_status)
 {
     MPT3SASEventData *event_data2 = NULL;
@@ -2565,27 +2568,37 @@ static void mpt3sas_disk_change_list_event_enqueue(MPT3SASState *s, uint16_t enc
     sas_topology_change_list->ExpanderDevHandle = expander_dev_handle;
     sas_topology_change_list->NumPhys = num_phys;
     sas_topology_change_list->NumEntries = 0;
-    sas_topology_change_list->StartPhyNum = start_phy_num;
+    sas_topology_change_list->StartPhyNum = start_dev_idx % s->expander.downstream_phys;
     sas_topology_change_list->ExpStatus = exp_status;
     sas_topology_change_list->PhysicalPort = physical_port; /* port associated with expander port */
 
-    while ((sdev = scsi_device_find(&s->bus, 0, i++, 0)) != NULL) {
-        if (sdev->id >= expander_idx * s->expander.downstream_phys &&
-            sdev->id < (expander_idx + 1) * s->expander.downstream_phys) {
-            uint16_t dev_handle = DEV_NUM_TO_HANDLE(sdev->id);
+    i = start_dev_idx;
 
-            trace_mpt3sas_event_add_device(sdev, dev_handle, sdev->id);
+    while (i < (expander_idx + 1) * s->expander.all_phys) {
+        if ((sdev = scsi_device_find(&s->bus, 0, i++, 0)) == NULL) 
+            break;
 
-            sas_topology_change_list->PHY[entries].AttachedDevHandle = cpu_to_le16(dev_handle);
-            sas_topology_change_list->PHY[entries].LinkRate = MPI25_EVENT_SAS_TOPO_LR_RATE_12_0 << MPI2_EVENT_SAS_TOPO_LR_CURRENT_SHIFT;
-            sas_topology_change_list->PHY[entries].PhyStatus = phy_status;
-            entries++;
-        }   
+        uint16_t dev_handle = DEV_NUM_TO_HANDLE(sdev->id);
+
+        trace_mpt3sas_event_add_device(sdev, dev_handle, sdev->id);
+
+        sas_topology_change_list->PHY[entries].AttachedDevHandle = cpu_to_le16(dev_handle);
+        sas_topology_change_list->PHY[entries].LinkRate = MPI25_EVENT_SAS_TOPO_LR_RATE_12_0 << MPI2_EVENT_SAS_TOPO_LR_CURRENT_SHIFT;
+        sas_topology_change_list->PHY[entries].PhyStatus = phy_status;
+        entries++;
+    }
+
+    if (!entries) {
+        g_free(event_data2);
+        return i;
     }
 
     //update entries
     sas_topology_change_list->NumEntries = entries;
     mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST, event_data2);
+
+    //return end phy
+    return i;
 }
 
 
@@ -2594,6 +2607,7 @@ static void mpt3sas_add_events(MPT3SASState *s)
 {
     uint16_t enclosure_handle = MPT3SAS_ENCLOSURE_HANDLE_START;
     uint32_t expander;
+    uint32_t end_idx = 0;
 
     /* Trigger the following events
      *
@@ -2634,13 +2648,15 @@ static void mpt3sas_add_events(MPT3SASState *s)
 
 
         /* notify guest driver sas topology change(report expander PHY), add expander and drives */
-        mpt3sas_disk_change_list_event_enqueue(s, enclosure_handle + expander,
+        while (end_idx != (expander + 1) * s->expander.all_phys) {
+            end_idx = mpt3sas_disk_change_list_event_enqueue(s, enclosure_handle + expander,
                                             MPT3SAS_EXPANDER_HANDLE_START + expander, /* expander handle */
                                             s->expander.all_phys, /* num phys */
-                                            0, /* start phy number */
+                                            end_idx, /* start phy number */
                                             MPI2_EVENT_SAS_TOPO_ES_ADDED,
                                             expander, /* physical port */
-                                            MPI2_EVENT_SAS_TOPO_RC_TARG_ADDED);
+                                            MPI2_EVENT_SAS_TOPO_RC_TARG_ADDED); 
+        }
 
         /* send change list event for phys that forming the wide port */
         mpt3sas_phy_change_list_event_enqueue(s, enclosure_handle + expander,
@@ -3209,7 +3225,7 @@ static void mpt3sas_init_expander(MPT3SASState *s, uint8_t all_phys, uint8_t cou
     s->expander.count = count;
     s->expander.all_phys = all_phys;
     s->expander.upstream_phys = MPT3SAS_NUM_PHYS / count;
-    s->expander.downstream_phys = s->expander.all_phys - s->expander.downstream_phys;
+    s->expander.downstream_phys = s->expander.all_phys - s->expander.upstream_phys;
 }
 
 #if 0
@@ -3235,8 +3251,8 @@ static int mpt3sas_parse_cdb(SCSIDevice *dev, SCSICommand *cmd, uint8_t *buf, vo
 
 static const struct SCSIBusInfo mpt3sas_scsi_info = {
     .tcq = true,
-    .max_target = 255,
-    .max_lun = 1,
+    .max_target = MAX_SCSI_TARGETS,
+    .max_lun = MAX_SCSI_LUNS,
 
     .get_sg_list = mpt3sas_get_ieee_sg_list,
     .complete = mpt3sas_command_complete,
