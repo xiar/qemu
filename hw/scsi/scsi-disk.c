@@ -39,9 +39,15 @@ do { printf("scsi-disk: " fmt , ## __VA_ARGS__); } while (0)
 #include "hw/block/block.h"
 #include "sysemu/dma.h"
 #include "qemu/cutils.h"
+#include "trace.h"
+#include "qemu/timer.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #ifdef __linux
 #include <scsi/sg.h>
+#include <unistd.h>
 #endif
 
 #define SCSI_WRITE_SAME_MAX         524288
@@ -89,6 +95,9 @@ struct SCSIDiskState
     bool tray_open;
     bool tray_locked;
     uint32_t rotation;
+    uint64_t format_time_emulation;
+    double progress;
+    uint8_t format_in_progress;
 };
 
 static int scsi_handle_rw_error(SCSIDiskReq *r, int error, bool acct_failed);
@@ -1410,6 +1419,80 @@ static int scsi_disk_emulate_start_stop(SCSIDiskReq *r)
     return 0;
 }
 
+typedef struct CookieStat {
+    BlockAcctCookie cookie;
+    void *state;
+} CookieStat;
+
+static void format_unit_write_cb(void *opaque, int ret)
+{
+    CookieStat *myc = (CookieStat *)opaque;
+    SCSIDiskState *s = myc->state;
+
+    block_acct_done(blk_get_stats(s->qdev.conf.blk), &myc->cookie);
+    g_free(myc);
+    return;
+}
+
+static void *format_unit_processing(void *opaque)
+{
+    SCSIDiskState *s = opaque;
+    uint32_t i;
+
+    int step = ((s->qdev.max_lba + 1) * s->qdev.blocksize) / (1024 * 1024 * s->qdev.blocksize);
+    for (i = 0; i < step; i++) {
+        CookieStat *myc = g_malloc(sizeof(CookieStat));
+        myc->state = s;
+        block_acct_start(blk_get_stats(s->qdev.conf.blk),
+                         &myc->cookie,
+                         1024 * 1024 * (s->qdev.blocksize / 512),
+                         BLOCK_ACCT_WRITE);
+        blk_aio_write_zeroes(s->qdev.conf.blk,
+                             i * 1024 * 1024 * (s->qdev.blocksize /512), 1024 * 1024 * (s->qdev.blocksize / 512),
+                             0, format_unit_write_cb, myc);
+        #ifdef __linux__
+        usleep(s->format_time_emulation * 1000 * 1000 / step);
+        #endif
+        #ifdef _WIN32
+        Sleep(s->format_time_emulation * 1000 /step);
+        #endif
+        s->progress = i * 100.0 / step;
+    }
+
+    s->progress = 0;
+    s->format_in_progress = 0;
+    return NULL;
+}
+
+/* The FORMAT_UNIT command has many arguments. Currently the emulation only support IMMED.
+ * In the emulation, all data is formatted with zero. Other format pattern is wait to be implemented.
+ * */
+static int scsi_disk_emulate_format_unit(SCSIDiskReq *r, uint8_t *inbuf)
+{
+    SCSIDiskState *s = DO_UPCAST(SCSIDiskState, qdev, r->req.dev);
+    SCSIRequest *req = &r->req;
+
+    if (s->format_in_progress) {
+        scsi_req_complete(req, CHECK_CONDITION);
+        return 0;
+    }
+
+    s->format_in_progress++;
+
+    int immed = inbuf[1] & 0x2;
+    if (immed) {
+        QemuThread thread;
+        qemu_thread_create(&thread, "format_unit_thread", format_unit_processing, s, QEMU_THREAD_DETACHED);
+    } else {
+        format_unit_processing(s);
+    }
+
+    scsi_req_complete(req, GOOD);
+    
+    return 0;
+}
+
+
 static void scsi_disk_emulate_read_data(SCSIRequest *req)
 {
     SCSIDiskReq *r = DO_UPCAST(SCSIDiskReq, req, req);
@@ -1872,6 +1955,9 @@ static void scsi_disk_emulate_write_data(SCSIRequest *req)
     case WRITE_SAME_16:
         scsi_disk_emulate_write_same(r, r->iov.iov_base);
         break;
+    case FORMAT_UNIT:
+        scsi_disk_emulate_format_unit(r, r->iov.iov_base);
+        break;
 
     default:
         abort();
@@ -1883,7 +1969,7 @@ static int32_t scsi_disk_emulate_command(SCSIRequest *req, uint8_t *buf)
     SCSIDiskReq *r = DO_UPCAST(SCSIDiskReq, req, req);
     SCSIDiskState *s = DO_UPCAST(SCSIDiskState, qdev, req->dev);
     uint64_t nb_sectors;
-    uint8_t *outbuf;
+    uint8_t *outbuf = NULL;
     int buflen;
 
     switch (req->cmd.buf[0]) {
@@ -1900,11 +1986,45 @@ static int32_t scsi_disk_emulate_command(SCSIRequest *req, uint8_t *buf)
     case GET_EVENT_STATUS_NOTIFICATION:
     case MECHANISM_STATUS:
     case REQUEST_SENSE:
+    case FORMAT_UNIT:
         break;
 
     default:
         if (!blk_is_available(s->qdev.conf.blk)) {
             scsi_check_condition(r, SENSE_CODE(NO_MEDIUM));
+            return 0;
+        }
+        break;
+    }
+
+    /*
+     * Check if device is in formatting, if so, requests except INQUIRY, REPORT_LUNS and
+     * REQUEST_SENSE should return CHECK_CONDITION status.
+     */
+    switch (req->cmd.buf[0]) {
+    case INQUIRY:
+    case REQUEST_SENSE:
+        break;
+    default:
+        if (s->format_in_progress) {
+            scsi_req_build_sense(req, SENSE_CODE(FORMAT_IN_PROGRESS));
+            req->sense[15] = 0x80;
+            req->sense[16] = ((int)(65536 * s->progress / 100) >> 8) & 0xff;
+            req->sense[17] = (int)(65536 * s->progress / 100) & 0xff;
+
+            /*
+             * FIXME: guest os expects the first two TEST_UNIT_READY after FORMAT_UNIT
+             * to return GOOD status, otherwise it would retry multiple times. Need to
+             * figure out the correct reply mechanism.
+             */
+            if (req->cmd.buf[0] == TEST_UNIT_READY && s->format_in_progress < 3) {
+                s->format_in_progress++;
+                scsi_req_build_sense(req, SENSE_CODE(NO_SENSE));
+                scsi_req_complete(req, GOOD);
+            } else {
+                scsi_req_complete(req, CHECK_CONDITION);
+            }
+
             return 0;
         }
         break;
@@ -1923,13 +2043,16 @@ static int32_t scsi_disk_emulate_command(SCSIRequest *req, uint8_t *buf)
     }
     r->buflen = MAX(4096, req->cmd.xfer);
 
+    /*
+     * Here we memset outbuf to zero to avoid NULL pointer access.
+     * */
     if (!r->iov.iov_base) {
         r->iov.iov_base = blk_blockalign(s->qdev.conf.blk, r->buflen);
+        memset(outbuf, 0, r->buflen);
     }
-
     buflen = req->cmd.xfer;
     outbuf = r->iov.iov_base;
-    memset(outbuf, 0, r->buflen);
+
     switch (req->cmd.buf[0]) {
     case TEST_UNIT_READY:
         assert(blk_is_available(s->qdev.conf.blk));
@@ -2012,12 +2135,28 @@ static int32_t scsi_disk_emulate_command(SCSIRequest *req, uint8_t *buf)
         outbuf[7] = 0;
         break;
     case REQUEST_SENSE:
-        /* Just return "NO SENSE".  */
-        buflen = scsi_build_sense(NULL, 0, outbuf, r->buflen,
-                                  (req->cmd.buf[1] & 1) == 0);
+        /* If Format Unit is in progress, return progress indicator.
+         * Otherwise just return "NO SENSE".  */
+        if (s->format_in_progress) {
+            memset(outbuf, 0, r->buflen);
+            outbuf[0] = 0x70;
+            outbuf[2] = NOT_READY;
+            outbuf[7] = 10;
+            outbuf[12] = 0x04;
+            outbuf[13] = 0x04;
+            outbuf[15] = 0x80;
+            outbuf[16] = ((int)(65536 * s->progress / 100) >> 8) & 0xff;
+            outbuf[17] = (int)(65536 * s->progress / 100) & 0xff;
+        } else {
+            scsi_build_sense(NULL, 0, outbuf, r->buflen, (req->cmd.buf[1] & 1) == 0);
+        }
+
+        buflen = r->buflen;
         if (buflen < 0) {
             goto illegal_request;
         }
+        break;
+    case FORMAT_UNIT:
         break;
     case MECHANISM_STATUS:
         buflen = scsi_emulate_mechanism_status(s, outbuf);
@@ -2477,6 +2616,7 @@ static const SCSIReqOps *const scsi_disk_reqops_dispatch[256] = {
     [VERIFY_10]                       = &scsi_disk_emulate_reqops,
     [VERIFY_12]                       = &scsi_disk_emulate_reqops,
     [VERIFY_16]                       = &scsi_disk_emulate_reqops,
+    [FORMAT_UNIT]                     = &scsi_disk_emulate_reqops,
 
     [READ_6]                          = &scsi_disk_dma_reqops,
     [READ_10]                         = &scsi_disk_dma_reqops,
@@ -2707,6 +2847,7 @@ static Property scsi_hd_properties[] = {
     DEFINE_BLOCK_CHS_PROPERTIES(SCSIDiskState, qdev.conf),
     DEFINE_PROP_UINT32("rotation", SCSIDiskState, rotation, 7200),
     DEFINE_PROP_UINT32("slot_number", SCSIDiskState, qdev.slot_number, 0),
+    DEFINE_PROP_UINT64("format_time_emulation", SCSIDiskState, format_time_emulation, 120),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -2856,5 +2997,6 @@ static void scsi_disk_register_types(void)
 #endif
     type_register_static(&scsi_disk_info);
 }
+
 
 type_init(scsi_disk_register_types)

@@ -1299,6 +1299,11 @@ const struct SCSISense sense_code_LUN_NOT_READY = {
     .key = NOT_READY, .asc = 0x04, .ascq = 0x03
 };
 
+/* LUN not ready, Format in Progress */
+const struct SCSISense sense_code_FORMAT_IN_PROGRESS = {
+    .key = NOT_READY, .asc = 0x04, .ascq = 0x04
+};
+
 /* LUN not ready, Medium not present */
 const struct SCSISense sense_code_NO_MEDIUM = {
     .key = NOT_READY, .asc = 0x3a, .ascq = 0x00
