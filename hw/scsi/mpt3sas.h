@@ -183,10 +183,10 @@ struct MPT3SASState {
     MPT3SASEventQueue *event_queue;
 
     struct {
-        uint8_t count;
-        uint8_t all_phys;
-        uint8_t upstream_phys;
-        uint8_t downstream_phys;
+        uint32_t count;
+        uint32_t all_phys;
+        uint32_t upstream_phys;
+        uint32_t downstream_phys;
 
     } expander;
 

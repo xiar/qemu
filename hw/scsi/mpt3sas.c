@@ -3220,11 +3220,15 @@ static void mpt3sas_request_cancelled(SCSIRequest *sreq)
 {
 }
 
-static void mpt3sas_init_expander(MPT3SASState *s, uint8_t all_phys, uint8_t count)
+static void mpt3sas_init_expander(MPT3SASState *s)
 {
-    s->expander.count = count;
-    s->expander.all_phys = all_phys;
-    s->expander.upstream_phys = MPT3SAS_NUM_PHYS / count;
+    if (!s->expander.count)
+        s->expander.count = MPT3SAS_EXPANDER_COUNT;
+
+    if (!s->expander.all_phys)
+        s->expander.all_phys = MPT3SAS_EXPANDER_NUM_PHYS;
+
+    s->expander.upstream_phys = MPT3SAS_NUM_PHYS / s->expander.count;
     s->expander.downstream_phys = s->expander.all_phys - s->expander.upstream_phys;
 }
 
@@ -3361,7 +3365,7 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
     scsi_bus_new(&s->bus, sizeof(s->bus), &dev->qdev, &mpt3sas_scsi_info, NULL);
 
     // init expander 
-    mpt3sas_init_expander(s, MPT3SAS_EXPANDER_NUM_PHYS, MPT3SAS_EXPANDER_COUNT);
+    mpt3sas_init_expander(s);
 
     if (!d->hotplugged) {
         scsi_bus_legacy_handle_cmdline(&s->bus, errp);
@@ -3393,6 +3397,8 @@ static void mpt3sas_reset(DeviceState *dev)
 static Property mpt3sas_properties[] = {
     DEFINE_PROP_UINT64("sas_address", MPT3SASState, sas_address, 0),
     DEFINE_PROP_BIT("use_msix", MPT3SASState, msix_available, 0, true),
+    DEFINE_PROP_UINT32("expander-count", MPT3SASState, expander.count, MPT3SAS_EXPANDER_COUNT),
+    DEFINE_PROP_UINT32("expander-phys", MPT3SASState, expander.all_phys, MPT3SAS_EXPANDER_NUM_PHYS),
     DEFINE_PROP_END_OF_LIST(),
 };
 
