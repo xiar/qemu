@@ -3,11 +3,13 @@
  *
  */
 
-//#define DEBUG_SCSI
+#define DEBUG_SCSI
 
 #ifdef DEBUG_SCSI
 #define DPRINTF(fmt, ...) \
-do { printf("scsi-enclosure: " fmt , ## __VA_ARGS__); } while (0)
+do { struct timeval _now; gettimeofday(&_now, NULL); \
+    qemu_log_mask(LOG_TRACE, "[%zd.%06zd] scsi-enclosure: " fmt, (size_t)_now.tv_sec, (size_t)_now.tv_usec, ##__VA_ARGS__); \
+} while (0)
 #else
 #define DPRINTF(fmt, ...) do {} while(0)
 #endif
@@ -68,7 +70,180 @@ static void scsi_check_condition(SCSISESReq *r, SCSISense sense)
 
 static int scsi_disk_emulate_inquiry(SCSIRequest *req, uint8_t *outbuf)
 {
-    return 0;
+    SCSISESState *s = DO_UPCAST(SCSISESState, qdev, req->dev);
+    int buflen = 0;
+    int start;
+    
+    if (req->cmd.buf[1] & 0x1) {
+        /* Vital product data */
+        uint8_t page_code = req->cmd.buf[2];
+
+        outbuf[buflen++] = s->qdev.type & 0x1f;
+        outbuf[buflen++] = page_code ; // this page
+        outbuf[buflen++] = 0x00;
+        outbuf[buflen++] = 0x00;
+        start = buflen;
+
+        switch (page_code) {
+        case 0x00: /* Supported page codes, mandatory */
+        {
+            DPRINTF("Inquiry EVPD[Supported pages] "
+                    "buffer size %zd\n", req->cmd.xfer);
+            outbuf[buflen++] = 0x00; // list of supported pages (this page)
+            if (s->serial) {
+                outbuf[buflen++] = 0x80; // unit serial number
+            }
+            outbuf[buflen++] = 0x83; // device identification
+            outbuf[buflen++] = 0x86; 
+            outbuf[buflen++] = 0xc0;
+            outbuf[buflen++] = 0xc1;
+            outbuf[buflen++] = 0xc2;
+            outbuf[buflen++] = 0xc3;
+            outbuf[buflen++] = 0xc4;
+            outbuf[buflen++] = 0xc5;
+            outbuf[buflen++] = 0xc6;
+            outbuf[buflen++] = 0xc7;
+            break;
+        }
+        case 0x80: /* Device serial number, optional */
+        {
+            int l;
+
+            if (!s->serial) {
+                DPRINTF("Inquiry (EVPD[Serial number] not supported\n");
+                return -1;
+            }
+
+            l = strlen(s->serial);
+            if (l > 36) {
+                l = 36;
+            }
+
+            DPRINTF("Inquiry EVPD[Serial number] "
+                    "buffer size %zd\n", req->cmd.xfer);
+            memcpy(outbuf + buflen, s->serial, l);
+            buflen += l;
+            break;
+        }
+        case 0x83: /* Device identification page, mandatory */
+        {
+            const uint64_t sas_addr_0 = 0x50060480E3FAAA09;
+            const uint64_t sas_addr_1 = 0x500604810B18F57E;
+
+            DPRINTF("Inquiry EVPD[Device identification] buffer size %zd\n", req->cmd.xfer);
+
+            // first designation descriptor: logical unit id
+            outbuf[buflen++] = 0x01; // Binary
+            outbuf[buflen++] = 0x03; // PIV: 0b, ASSOC: 00b, desigtype: 03h
+            outbuf[buflen++] = 0x00; // reserved
+            outbuf[buflen++] = 8;
+            *(uint64_t*)&outbuf[buflen] = cpu_to_be64(sas_addr_0);
+            buflen += 8;
+
+            // second designation descriptor: target port id
+            outbuf[buflen++] = 0x61; // binary, proto id 6h
+            outbuf[buflen++] = 0x93; // PIV: 1b, ASSOC: 01b, desigtype: 03h
+            outbuf[buflen++] = 0x00; // reserved
+            outbuf[buflen++] = 8;
+            *(uint64_t*)&outbuf[buflen] = cpu_to_be64(sas_addr_1);
+            buflen += 8;
+
+            // third designation descriptor: relative target port id
+            outbuf[buflen++] = 0x61; // binary, proto id 6h
+            outbuf[buflen++] = 0x94; // PIV: 1b, ASSOC: 01b, desigtype: 03h
+            outbuf[buflen++] = 0x00; // reserved
+            outbuf[buflen++] = 4;
+            outbuf[buflen++] = 0;
+            outbuf[buflen++] = 0;
+            outbuf[buflen++] = 0;
+            outbuf[buflen++] = 1;
+
+            break;
+        }
+        case 0x86:
+        {
+            //outbuf[3] = 0x3C;
+            outbuf[5] = 0x01; // SIMPSUP: 1b
+            buflen = 64;
+            break;
+        }
+        default:
+            DPRINTF("Inquiry EVPD[page 0x%x]: not supported\n", page_code);
+            return -1;
+        }
+
+        /* done with EVPD */
+        assert(buflen - start <= 255);
+        outbuf[start - 1] = buflen - start;
+        return buflen;
+    }
+
+    /* Standard INQUIRY data */
+    if (req->cmd.buf[2] != 0) {
+        return -1;
+    }
+
+    /* PAGE CODE == 0 */
+    buflen = req->cmd.xfer;
+    if (buflen > SCSI_MAX_INQUIRY_LEN) {
+        buflen = SCSI_MAX_INQUIRY_LEN;
+    }
+
+    outbuf[0] = s->qdev.type & 0x1f;
+    outbuf[1] = 0;
+
+    /*
+     * We claim conformance to SPC-3, which is required for guests
+     * to ask for modern features like READ CAPACITY(16) or the
+     * block characteristics VPD page by default.  Not all of SPC-3
+     * is actually implemented, but we're good enough.
+     */
+    outbuf[2] = 6;
+    outbuf[3] = 2 | 0x10; /* Format 2, HiSup */
+
+    outbuf[6] = 0xD0; /* BQue | EncServ | Multip */
+    /* Sync data transfer and TCQ.  */
+    outbuf[7] = 0x02; /* CMDQue */
+
+    /* 8-15: T10 vendor ID */
+    strpadcpy((char *) &outbuf[8], 8, "EMC", ' ');
+    /* 16-31: product ID */
+    strpadcpy((char *) &outbuf[16], 16, "ESES Enclosure", ' ');
+    /* 32-35: product revision level, in ascii */
+    strpadcpy((char *) &outbuf[32], 4, "0001", '0');
+
+    if (buflen > 36) {
+        outbuf[4] = buflen - 5; /* Additional Length = (Len - 1) - 4 */
+    } else {
+        /* If the allocation length of CDB is too small,
+           the additional length is not adjusted */
+        outbuf[4] = 36 - 5;
+        return buflen;
+    }
+
+    /*  component vendor ID: 'PMCSIERA' */
+    if (s->serial) {
+        memcpy(&outbuf[36], s->serial, strlen(s->serial));
+    }
+    /*  component ID: 0x8054, SXP36X12G chip */
+    outbuf[44] = 0x80;
+    outbuf[45] = 0x54;
+    /* component revision level */
+    outbuf[46] = 0x02;
+
+    *(uint16_t*)&outbuf[58] = cpu_to_be16(0x00A0); /* SAM-5 */
+    *(uint16_t*)&outbuf[60] = cpu_to_be16(0x0C20); /* SAS-2 */
+    *(uint16_t*)&outbuf[62] = cpu_to_be16(0x0460); /* SPC-4 */
+    *(uint16_t*)&outbuf[64] = cpu_to_be16(0x0580); /* SES-3 */
+
+    *(uint16_t*)&outbuf[112] = cpu_to_be16(0x0017); /* enclosure platform type: Tabasco */
+    *(uint16_t*)&outbuf[114] = cpu_to_be16(0x0014); /* enclosure board type: Tabasco */
+
+    *(uint16_t*)&outbuf[118] = cpu_to_be16(0x0002); /* eses version descriptor */
+
+    strpadcpy((char*)&outbuf[120], 16, "CF2CY162200291", '\0'); /* enclosure unique id */
+
+    return buflen;
 }
 
 static int scsi_disk_emulate_mode_sense(SCSISESReq *r, uint8_t *outbuf)
@@ -76,15 +251,21 @@ static int scsi_disk_emulate_mode_sense(SCSISESReq *r, uint8_t *outbuf)
     return 0;
 }
 
-#if 0
 static void scsi_ses_emulate_read_data(SCSIRequest *req)
 {
     SCSISESReq *r = DO_UPCAST(SCSISESReq, req, req);
+    int buflen = r->iov.iov_len;
+
+    if (buflen) {
+        DPRINTF("Read buf_len=%d\n", buflen);
+        r->iov.iov_len = 0;
+        scsi_req_data(&r->req, buflen);
+        return;
+    }
 
     /* This also clears the sense buffer for REQUEST SENSE.  */
     scsi_req_complete(&r->req, GOOD);
 }
-#endif
 
 static void scsi_disk_emulate_mode_select(SCSISESReq *r, uint8_t *inbuf)
 {
@@ -120,19 +301,6 @@ static int32_t scsi_ses_emulate_command(SCSIRequest *req, uint8_t *buf)
     SCSISESState *s = DO_UPCAST(SCSISESState, qdev, req->dev);
     uint8_t *outbuf = NULL;
     int buflen;
-
-    switch (req->cmd.buf[0]) {
-    case INQUIRY:
-    case MODE_SENSE:
-    case MODE_SENSE_10:
-    case REQUEST_SENSE:
-    case RECEIVE_DIAGNOSTIC:
-    case SEND_DIAGNOSTIC:
-        break;
-
-    default:
-        break;
-    }
 
     if (req->cmd.xfer > 65536) {
         goto illegal_request;
@@ -229,13 +397,20 @@ static void scsi_ses_realize(SCSIDevice *dev, Error **errp)
     }
 }
 
+static uint8_t *scsi_get_buf(SCSIRequest *req)
+{
+    SCSISESReq *r = DO_UPCAST(SCSISESReq, req, req);
+
+    return (uint8_t *)r->iov.iov_base;
+}
+
 static const SCSIReqOps scsi_ses_emulate_reqops = {
     .size         = sizeof(SCSISESReq),
     .free_req     = scsi_free_request,
     .send_command = scsi_ses_emulate_command,
-    //.read_data    = scsi_ses_emulate_read_data,
+    .read_data    = scsi_ses_emulate_read_data,
     .write_data   = scsi_ses_emulate_write_data,
-    //.get_buf      = scsi_get_buf,
+    .get_buf      = scsi_get_buf,
 };
 
 static const SCSIReqOps *const scsi_disk_reqops_dispatch[256] = {
