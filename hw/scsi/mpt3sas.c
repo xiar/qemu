@@ -2654,6 +2654,20 @@ static int mpt3sas_disk_change_list_event_enqueue(MPT3SASState *s, uint16_t encl
     return i;
 }
 
+static void mpt3sas_sas_device_status_change_event_enqueue(MPT3SASState *s, uint32_t rc, int scsi_id) {
+    MPT3SASEventData *event_data = NULL;
+    uint8_t dev_handle = DEV_NUM_TO_HANDLE(scsi_id);
+    event_data = g_malloc0(sizeof(MPT3SASEventData) + sizeof(MPI2_EVENT_DATA_SAS_DEVICE_STATUS_CHANGE));
+    event_data->length = sizeof(MPI2_EVENT_DATA_SAS_DEVICE_STATUS_CHANGE);
+    pMpi2EventDataSasDeviceStatusChange_t sas_dev_stat_change_data = (pMpi2EventDataSasDeviceStatusChange_t)event_data->data;
+    sas_dev_stat_change_data->TaskTag = 0xFFFF;
+    sas_dev_stat_change_data->ReasonCode = rc;
+    sas_dev_stat_change_data->PhysicalPort = 0x0;
+    sas_dev_stat_change_data->DevHandle = cpu_to_le16(dev_handle);
+    sas_dev_stat_change_data->SASAddress = s->sas_address;
+    memset(sas_dev_stat_change_data->LUN, 0xFF, sizeof(U8) * 8);
+    mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_DEVICE_STATUS_CHANGE, event_data);
+}
 
 // report all devices to guest driver
 static void mpt3sas_add_events(MPT3SASState *s)
@@ -3392,17 +3406,7 @@ static void mpt3sas_hotunplug(MPT3SASState *s, SCSIDevice *d, int scsi_id)
     uint8_t dev_handle = DEV_NUM_TO_HANDLE(scsi_id);
 
     // 2. notify driver device status change (internel device reset)
-    MPT3SASEventData *event_data2 = NULL;
-    event_data2 = g_malloc0(sizeof(MPT3SASEventData) + sizeof(MPI2_EVENT_DATA_SAS_DEVICE_STATUS_CHANGE));
-    event_data2->length = sizeof(MPI2_EVENT_DATA_SAS_DEVICE_STATUS_CHANGE);
-    pMpi2EventDataSasDeviceStatusChange_t sas_dev_stat_change_data = (pMpi2EventDataSasDeviceStatusChange_t)event_data2->data;
-    sas_dev_stat_change_data->TaskTag = 0xFFFF;
-    sas_dev_stat_change_data->ReasonCode = MPI2_EVENT_SAS_DEV_STAT_RC_INTERNAL_DEVICE_RESET;
-    sas_dev_stat_change_data->PhysicalPort = 0x0;
-    sas_dev_stat_change_data->DevHandle = cpu_to_le16(dev_handle);
-    sas_dev_stat_change_data->SASAddress = s->sas_address;
-    memset(sas_dev_stat_change_data->LUN, 0xFF, sizeof(U8) * 8);
-    mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_DEVICE_STATUS_CHANGE, event_data2);
+    mpt3sas_sas_device_status_change_event_enqueue(s, MPI2_EVENT_SAS_DEV_STAT_RC_INTERNAL_DEVICE_RESET, scsi_id);
 
     // 3. notify driver sas topology change for all newly added device
     MPT3SASEventData *event_data3 = NULL;
@@ -3417,24 +3421,14 @@ static void mpt3sas_hotunplug(MPT3SASState *s, SCSIDevice *d, int scsi_id)
     sas_topology_change_list->NumEntries = 1;
     sas_topology_change_list->StartPhyNum = phy_id;
     sas_topology_change_list->ExpStatus = MPI2_EVENT_SAS_TOPO_ES_RESPONDING;
-    sas_topology_change_list->PhysicalPort = 0x0;
+    sas_topology_change_list->PhysicalPort = expander_id;
     sas_topology_change_list->PHY[0].AttachedDevHandle = cpu_to_le16(dev_handle);
     sas_topology_change_list->PHY[0].LinkRate = MPI2_EVENT_SAS_TOPO_LR_UNKNOWN_LINK_RATE << MPI2_EVENT_SAS_TOPO_LR_CURRENT_SHIFT;
     sas_topology_change_list->PHY[0].PhyStatus = MPI2_EVENT_SAS_TOPO_RC_TARG_NOT_RESPONDING;
     mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_TOPOLOGY_CHANGE_LIST, event_data3);
 
     // 4. notify driver device status change (internel device reset complete)
-    MPT3SASEventData *event_data4 = NULL;
-    event_data4 = g_malloc0(sizeof(MPT3SASEventData) + sizeof(MPI2_EVENT_DATA_SAS_DEVICE_STATUS_CHANGE));
-    event_data4->length = sizeof(MPI2_EVENT_DATA_SAS_DEVICE_STATUS_CHANGE);
-    pMpi2EventDataSasDeviceStatusChange_t sas_dev_stat_change_data2 = (pMpi2EventDataSasDeviceStatusChange_t)event_data4->data;
-    sas_dev_stat_change_data2->TaskTag = 0xFFFF;
-    sas_dev_stat_change_data2->ReasonCode = MPI2_EVENT_SAS_DEV_STAT_RC_CMP_INTERNAL_DEV_RESET;
-    sas_dev_stat_change_data2->PhysicalPort = 0x0;
-    sas_dev_stat_change_data2->DevHandle = cpu_to_le16(dev_handle);
-    sas_dev_stat_change_data2->SASAddress = s->sas_address;
-    memset(sas_dev_stat_change_data2->LUN, 0xFF, sizeof(U8) * 8);
-    mpt3sas_event_enqueue(s, MPI2_EVENT_SAS_DEVICE_STATUS_CHANGE, event_data4);
+    mpt3sas_sas_device_status_change_event_enqueue(s, MPI2_EVENT_SAS_DEV_STAT_RC_CMP_INTERNAL_DEV_RESET, scsi_id);
 
     // 5. notify driver sas discovery completed
     mpt3sas_send_discovery_event(s, MPI2_EVENT_SAS_DISC_RC_COMPLETED);
@@ -3442,7 +3436,7 @@ static void mpt3sas_hotunplug(MPT3SASState *s, SCSIDevice *d, int scsi_id)
 
 static SCSIDevice *mpt3sas_topology_scan(MPT3SASState *s)
 {
-    int scsi_target_nums = MPT3SAS_EXPANDER_NUM_SLOTS * MPT3SAS_EXPANDER_COUNT;
+    int scsi_target_nums = s->expander.downstream_phys * s->expander.count;
     SCSIDevice *newly_scaned_devices = g_new0(SCSIDevice, scsi_target_nums);
     SCSIDevice *curr_device = NULL;
     int i;
