@@ -203,8 +203,11 @@ static void scsi_qdev_realize(DeviceState *qdev, Error **errp)
         error_propagate(errp, local_err);
         return;
     }
-    dev->vmsentry = qemu_add_vm_change_state_handler(scsi_dma_restart_cb,
-                                                     dev);
+
+    if (dev->type != TYPE_ENCLOSURE) {
+        dev->vmsentry = qemu_add_vm_change_state_handler(scsi_dma_restart_cb,
+                                                          dev);
+    }
 }
 
 static void scsi_qdev_unrealize(DeviceState *qdev, Error **errp)

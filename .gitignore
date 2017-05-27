@@ -109,3 +109,5 @@ cscope.*
 tags
 TAGS
 *~
+*.deb
+*.tgz
