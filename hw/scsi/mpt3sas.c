@@ -901,7 +901,8 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
         expander_idx = dev_num / s->expander.downstream_phys;
 
         sas_device_pg0.EnclosureHandle = MPT3SAS_EXPANDER_ENCLOSURE_HANDLE + expander_idx;
-        sas_device_pg0.Slot = dev_num % s->expander.downstream_phys;
+        //sas_device_pg0.Slot = dev_num % s->expander.downstream_phys;
+        sas_device_pg0.Slot = d->slot_number;
         sas_device_pg0.SASAddress = cpu_to_le64(sas_address);
         sas_device_pg0.DevHandle = cpu_to_le16(handle);
         sas_device_pg0.ParentDevHandle = mpt3sas_get_parent_dev_handle(s, dev_num,
@@ -1173,7 +1174,7 @@ static size_t mpt3sas_config_enclosure_0(MPT3SASState *s, uint8_t **data, int ad
         uint8_t expander_idx = handle - MPT3SAS_ENCLOSURE_HANDLE_START;
 
         sas_enclosure_pg0.EnclosureLogicalID = MPT3SAS_EXPANDER_DEFAULT_SAS_ADDR + expander_idx;
-        sas_enclosure_pg0.NumSlots = MPT3SAS_EXPANDER_NUM_SLOTS;
+        sas_enclosure_pg0.NumSlots = s->expander.all_phys - s->expander.upstream_phys; 
     }
     sas_enclosure_pg0.Flags = 0x0;
     sas_enclosure_pg0.EnclosureHandle = handle;
