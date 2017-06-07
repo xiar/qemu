@@ -27,7 +27,7 @@
 #define MPT3SAS_ATTACHED_DEV_HANDLE_START   (MPT3SAS_EXPANDER_HANDLE_START + MPT3SAS_EXPANDER_COUNT)
 
 #define MPT3SAS_EXPANDER_PORT_START_PHY  (20)
-#define MPT3SAS_EXPANDER_NUM_PHYS   (28)
+#define MPT3SAS_EXPANDER_NUM_PHYS   (36)
 
 #define MPT3SAS_ENCLOSURE_HANDLE_START (0x1)
 
@@ -187,6 +187,7 @@ struct MPT3SASState {
         uint32_t all_phys;
         uint32_t upstream_phys;
         uint32_t downstream_phys;
+        uint32_t downstream_start_phy;
 
     } expander;
 

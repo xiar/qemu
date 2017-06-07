@@ -855,7 +855,7 @@ mpt3sas_scsi_io_command_completed(void *req, uint16_t smid, int command, uint64_
 mpt3sas_scsi_io_add_command(void *req, int command, uint16_t smid, uint64_t lba) "adding request %p smid 0x%04x command 0x%02x lba 0x%lx into completed queue"
 mpt3sas_scsi_command_cdb(int len, char *s) "cdb%d: %s"
 mpt3sas_scsi_io_error(uint32_t status) "SCSI IO error (status 0x%x)"
-mpt3sas_event_add_device(void *dev, uint16_t dev_handle, uint8_t phy_id) "Attaching scsi device %p device handle 0x%x phy id 0x%x"
+mpt3sas_event_add_device(void *dev, uint16_t dev_handle, uint8_t scsi_id, uint8_t phy_id) "Attaching scsi device %p device handle 0x%x scsi id %d phy id %d"
 mpt3sas_scsi_device_list(void *dev, uint32_t channel, uint32_t scsi_id, uint32_t lun) "scsi device %p channel %d scsi_id %d lun %d"
 mpt3sas_interrupt_coalescing(uint32_t processed) "interrupt coalescing number 0x%x"
 mpt3sas_msix_notify(uint8_t vector) "send msix interrupt vector 0x%x"
@@ -879,6 +879,7 @@ mpt3sas_config_sas_exp_pg0_dev_handle_address(uint16_t dev_handle, int address) 
 mpt3sas_hotplug(uint64_t dev, uint32_t scsi_id) "hotplug on wwn %#lx, scsi_id: %d"
 mpt3sas_hotunplug(uint64_t dev, uint32_t scsi_id) "hotunplug from wwn %#lx, scsi_id: %d"
 mpt3sas_sas_topology_change(const char *stat, int i, uint64_t prev_wwn, uint64_t curr_wwn) "%s on scsi_id: %d, %#lx > %#lx"
+mpt3sas_sas_expander_config_page_1(uint8_t expander_idx, uint8_t phy_id) "expander %d phy id %d"
 
 # hw/audio/milkymist-ac97.c
 milkymist_ac97_memory_read(uint32_t addr, uint32_t value) "addr %08x value %08x"
