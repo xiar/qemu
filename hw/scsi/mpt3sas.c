@@ -1120,10 +1120,8 @@ static size_t mpt3sas_config_sas_expander_1(MPT3SASState *s, uint8_t **data, int
 
         trace_mpt3sas_sas_expander_config_page_1(expander_idx, phy_id);
 
-        if (phy_id < s->expander.downstream_phys) {
+        if (phy_id >= s->expander.downstream_start_phy && phy_id < s->expander.all_phys) {
             uint32_t device_info;
-            //FIXME here
-           // uint32_t scsi_id = expander_idx * s->expander.downstream_phys + phy_id - s->expander.downstream_start_phy;
             uint32_t scsi_id = EXP_PHY_TO_SCSI_ID(s, expander_idx, phy_id);
 
             device_info = mpt3sas_get_sas_end_device_info(s, scsi_id, &exp_pg1.AttachedDevHandle);
@@ -1141,6 +1139,13 @@ static size_t mpt3sas_config_sas_expander_1(MPT3SASState *s, uint8_t **data, int
                 exp_pg1.NegotiatedLinkRate = MPI2_SAS_NEG_LINK_RATE_UNKNOWN_LINK_RATE;
                 break;
             }
+        } else if (phy_id > 3 && phy_id < s->expander.downstream_start_phy) {
+            exp_pg1.AttachedDeviceInfo =0;
+            exp_pg1.AttachedDevHandle = 0;
+            exp_pg1.NegotiatedLinkRate = MPI2_SAS_NEG_LINK_RATE_UNKNOWN_LINK_RATE;
+            exp_pg1.AttachedPhyInfo = 0;
+            exp_pg1.ExpanderDevHandle = 0;
+            exp_pg1.DiscoveryInfo = 0;
         } else {
             exp_pg1.AttachedDeviceInfo = mpt3sas_get_phy_device_info(s);
             exp_pg1.AttachedDevHandle = mpt3sas_get_expander_parent_handle(s, expander_idx);
