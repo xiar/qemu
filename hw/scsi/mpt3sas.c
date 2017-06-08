@@ -3191,17 +3191,17 @@ static void mpt3sas_command_complete(SCSIRequest *sreq,
     uint8_t sense_buf[SCSI_SENSE_BUF_SIZE];
     uint8_t sense_len;
 
+    hwaddr sense_buffer_addr = (hwaddr)req->dev->sense_buffer_address_hi << 32 | req->scsi_io.SenseBufferLowAddress;
+
+    sense_len = scsi_req_get_sense(sreq, sense_buf, SCSI_SENSE_BUF_SIZE);
+    if (sense_len > 0) {
+        trace_mpt3sas_scsi_io_command_sense_data(sense_buf[0] & 0x7f, sense_buf[2] & 0xf, sense_buf[12], sense_buf[13]);
+        pci_dma_write(PCI_DEVICE(s), sense_buffer_addr, sense_buf,
+                MIN(req->scsi_io.SenseBufferLength, sense_len));
+    }
+
     if (sreq->status != GOOD || resid || req->dev->doorbell_state == DOORBELL_WRITE) {
         Mpi2SCSIIOReply_t reply;
-
-        hwaddr sense_buffer_addr = (hwaddr)req->dev->sense_buffer_address_hi << 32 | req->scsi_io.SenseBufferLowAddress;
-
-        sense_len = scsi_req_get_sense(sreq, sense_buf, SCSI_SENSE_BUF_SIZE);
-        if (sense_len > 0) {
-            trace_mpt3sas_scsi_io_command_sense_data(sense_buf[0] & 0x7f, sense_buf[2] & 0xf, sense_buf[12], sense_buf[13]);
-            pci_dma_write(PCI_DEVICE(s), sense_buffer_addr, sense_buf,
-                    MIN(req->scsi_io.SenseBufferLength, sense_len));
-        }
 
         memset(&reply, 0, sizeof(reply));
         reply.DevHandle = req->scsi_io.DevHandle;
