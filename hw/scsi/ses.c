@@ -317,7 +317,6 @@ static int32_t scsi_ses_emulate_command(SCSIRequest *req, uint8_t *buf)
 
     switch (req->cmd.buf[0]) {
     case TEST_UNIT_READY:
-        assert(blk_is_available(s->qdev.conf.blk));
         break;
     case INQUIRY:
         buflen = scsi_disk_emulate_inquiry(req, outbuf);
