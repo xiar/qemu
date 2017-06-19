@@ -2048,7 +2048,7 @@ static int32_t scsi_disk_emulate_command(SCSIRequest *req, uint8_t *buf)
      * */
     if (!r->iov.iov_base) {
         r->iov.iov_base = blk_blockalign(s->qdev.conf.blk, r->buflen);
-        memset(outbuf, 0, r->buflen);
+        memset(r->iov.iov_base, 0, r->buflen);
     }
     buflen = req->cmd.xfer;
     outbuf = r->iov.iov_base;
