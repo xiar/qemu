@@ -1114,7 +1114,7 @@ static size_t mpt3sas_config_sas_expander_1(MPT3SASState *s, uint8_t **data, int
         dev_handle < MPT3SAS_EXPANDER_HANDLE_START + s->expander.count) {
         uint8_t expander_idx = dev_handle - MPT3SAS_EXPANDER_HANDLE_START;
 
-        if (phy_id > s->expander.all_phys)
+        if (phy_id > s->expander.all_phys - 1)
             return -1;
 
         exp_pg1.PhysicalPort = expander_idx;
@@ -1126,7 +1126,8 @@ static size_t mpt3sas_config_sas_expander_1(MPT3SASState *s, uint8_t **data, int
 
         trace_mpt3sas_sas_expander_config_page_1(expander_idx, phy_id);
 
-        if (phy_id >= s->expander.downstream_start_phy && phy_id < s->expander.downstream_phys) {
+        if ((phy_id >= s->expander.downstream_start_phy && phy_id < s->expander.downstream_phys) ||
+            phy_id == s->expander.all_phys - 1) {
             uint32_t device_info;
             uint32_t scsi_id = EXP_PHY_TO_SCSI_ID(s, expander_idx, phy_id);
 
@@ -1147,14 +1148,14 @@ static size_t mpt3sas_config_sas_expander_1(MPT3SASState *s, uint8_t **data, int
                 exp_pg1.NegotiatedLinkRate = MPI2_SAS_NEG_LINK_RATE_UNKNOWN_LINK_RATE;
                 break;
             }
-        } else if (phy_id >= s->expander.upstream_start_phy && phy_id < s->expander.upstream_phys) {
+        } else if (phy_id >= s->expander.upstream_start_phy && phy_id < s->expander.upstream_start_phy + s->expander.upstream_phys) {
             exp_pg1.AttachedDeviceInfo = mpt3sas_get_phy_device_info(s);
             exp_pg1.AttachedDevHandle = mpt3sas_get_expander_parent_handle(s, expander_idx);
             exp_pg1.NegotiatedLinkRate = MPI25_SAS_NEG_LINK_RATE_12_0;
             exp_pg1.AttachedPhyInfo = MPI2_SAS_APHYINFO_REASON_POWER_ON;
             exp_pg1.ExpanderDevHandle = MPT3SAS_EXPANDER_HANDLE_START + expander_idx;
             exp_pg1.DiscoveryInfo = MPI2_SAS_EXPANDER1_DISCINFO_LINK_STATUS_CHANGE;
-        } else if (phy_id >= s->expander.upstream_start_phy + s->expander.upstream_phys && phy_id < s->expander.downstream_start_phy) {
+        } else if (phy_id >= s->expander.upstream_start_phy + s->expander.upstream_phys && (phy_id < s->expander.downstream_start_phy || phy_id < s->expander.all_phys - 1)) {
             exp_pg1.AttachedDeviceInfo =0;
             exp_pg1.AttachedDevHandle = 0;
             exp_pg1.NegotiatedLinkRate = MPI2_SAS_NEG_LINK_RATE_UNKNOWN_LINK_RATE;
@@ -3349,8 +3350,6 @@ static void mpt3sas_init_expander(MPT3SASState *s)
 
     s->expander.all_phys += 1; // Leave one virtual phy for enclosure target
     
-    //s->expander.downstream_start_phy = MPT3SAS_NUM_PHYS;
-
     if (!s->expander.upstream_phys || (s->expander.upstream_phys > MPT3SAS_NUM_PHYS / s->expander.count))
         s->expander.upstream_phys = MPT3SAS_NUM_PHYS / s->expander.count;
 
@@ -3359,9 +3358,6 @@ static void mpt3sas_init_expander(MPT3SASState *s)
     if (!s->expander.downstream_phys)
         s->expander.downstream_phys = s->expander.all_phys - s->expander.downstream_start_phy;
 
-    //s->expander.upstream_start_phy = 0;
-
-    // Upstream phy can't be larger than s->expander.all_phys - 1 - MPT3SAS_NUM_PHYS
     if (s->expander.upstream_start_phy > s->expander.all_phys - MPT3SAS_NUM_PHYS - 1)
         s->expander.upstream_start_phy = s->expander.all_phys - MPT3SAS_NUM_PHYS - 1;
 
