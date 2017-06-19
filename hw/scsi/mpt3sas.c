@@ -124,7 +124,7 @@ typedef struct MPT3SASConfigPage {
 #define SCSI_ID_TO_HANDLE(scsi_id)  (MPT3SAS_ATTACHED_DEV_HANDLE_START + (scsi_id))
 
 #define PHY_INDEX(s, scsi_id) ((scsi_id) % (s)->expander.downstream_phys)
-#define SCSI_ID_TO_EXP_PHY(s, scsi_id) (PHY_INDEX(s, scsi_id) == s->expander.downstream_phys - 1 ? (s)->expander.all_phys - 1 : (s)->expander.downstream_start_phy + PHY_INDEX((s), (scsi_id)))
+#define SCSI_ID_TO_EXP_PHY(s, scsi_id) (PHY_INDEX((s), (scsi_id)) == s->expander.downstream_phys - 1 ? (s)->expander.all_phys - 1 : (s)->expander.downstream_start_phy + PHY_INDEX((s), (scsi_id)))
 #define EXP_PHY_TO_SCSI_ID(s, exp_id, phy_id) ((phy_id) == (s)->expander.all_phys - 1 ? (s)->expander.downstream_phys - 1 : (phy_id) + (exp_id) * (s)->expander.downstream_phys - (s)->expander.downstream_start_phy)
 
 #if 0
@@ -205,7 +205,7 @@ static uint16_t mpt3sas_get_parent_dev_handle(MPT3SASState *s, uint32_t scsi_id,
         uint8_t expander_idx = scsi_id / s->expander.downstream_phys;
 
         *phy_num = SCSI_ID_TO_EXP_PHY(s, scsi_id);
-        *physical_port = scsi_id + s->expander.count;
+        *physical_port = expander_idx;
         return MPT3SAS_EXPANDER_HANDLE_START + expander_idx;
     }
 
@@ -253,7 +253,7 @@ static void mpt3sas_get_attached_device_info(MPT3SASState *s, uint32_t phy_num, 
 
 static uint32_t mpt3sas_get_phy_device_info(MPT3SASState *s)
 {
-    uint32_t device_info = MPI2_SAS_DEVICE_INFO_SSP_INITIATOR | MPI2_SAS_DEVICE_INFO_END_DEVICE;
+    uint32_t device_info = MPI2_SAS_DEVICE_INFO_SSP_INITIATOR | MPI2_SAS_DEVICE_INFO_STP_INITIATOR | MPI2_SAS_DEVICE_INFO_END_DEVICE;
 
     if (s->expander.count) {
         device_info |= MPI2_SAS_DEVICE_INFO_SMP_INITIATOR;
@@ -687,6 +687,7 @@ static size_t mpt3sas_config_sas_io_unit_1(MPT3SASState *s, uint8_t **data, int 
     return page_len;
 }
 
+/*
 static bool mpt3sas_phy_handle_present(MPT3SASState *s, uint16_t handle)
 {
     if (s->expander.count) {
@@ -699,6 +700,7 @@ static bool mpt3sas_phy_handle_present(MPT3SASState *s, uint16_t handle)
 
     return true;
 }
+*/
 
 static uint16_t mpt3sas_get_next_sas_device_handle(MPT3SASState *s, uint16_t handle)
 {
@@ -709,11 +711,16 @@ static uint16_t mpt3sas_get_next_sas_device_handle(MPT3SASState *s, uint16_t han
         return 0xFFFF;
     }
 
+    /*
     while (handle < MPT3SAS_IOC_HANDLE_START + MPT3SAS_NUM_PHYS) {
         if (mpt3sas_phy_handle_present(s, handle)) {
             return handle;
         }
         handle++;
+    }
+    */
+    if (handle < MPT3SAS_IOC_HANDLE_START + MPT3SAS_NUM_PHYS) {
+        return handle;
     }
 
     if (handle == MPT3SAS_IOC_HANDLE_START + MPT3SAS_NUM_PHYS) {
@@ -864,13 +871,13 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
     sas_device_pg0.Header.PageVersion = MPI2_SASDEVICE0_PAGEVERSION;
     sas_device_pg0.Header.PageNumber = 0x0;
     sas_device_pg0.Header.PageType = MPI2_CONFIG_PAGETYPE_EXTENDED;
-    sas_device_pg0.Header.ExtPageLength = cpu_to_le16(sizeof(sas_device_pg0) / 4);
+    sas_device_pg0.Header.ExtPageLength = sizeof(sas_device_pg0) / 4;
     sas_device_pg0.Header.ExtPageType = MPI2_CONFIG_EXTPAGETYPE_SAS_DEVICE;
     sas_device_pg0.AccessStatus = MPI2_SAS_DEVICE0_ASTATUS_NO_ERRORS;
 
     if (handle >= MPT3SAS_IOC_HANDLE_START &&
-        handle < MPT3SAS_IOC_HANDLE_START + MPT3SAS_NUM_PHYS &&
-        mpt3sas_phy_handle_present(s, handle)) { // ioc device
+        handle < MPT3SAS_IOC_HANDLE_START + MPT3SAS_NUM_PHYS/* &&
+        mpt3sas_phy_handle_present(s, handle)*/) { // ioc device
 
         phy_id = handle - MPT3SAS_IOC_HANDLE_START;
 
@@ -879,10 +886,12 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
         sas_device_pg0.PhyNum = 0x0;
         sas_device_pg0.DeviceInfo = mpt3sas_get_phy_device_info(s);
         sas_device_pg0.ParentDevHandle = 0x0;
-        sas_device_pg0.PhysicalPort = phy_id;
+        sas_device_pg0.PhysicalPort = phy_id / s->expander.upstream_phys;
         sas_device_pg0.SASAddress = cpu_to_le64(s->sas_address + phy_id);
         sas_device_pg0.Flags = cpu_to_le16(MPI2_SAS_DEVICE0_FLAGS_DEVICE_PRESENT | MPI2_SAS_DEVICE0_FLAGS_ENCL_LEVEL_VALID);
         sas_device_pg0.DmaGroup = handle;
+        sas_device_pg0.EnclosureLevel = 0;
+        sas_device_pg0.ConnectorName = 0x20202020;
     } else if (handle >= MPT3SAS_ATTACHED_DEV_HANDLE_START &&
             handle < MPT3SAS_ATTACHED_DEV_HANDLE_START + s->expander.all_phys * s->expander.count) { // attached sas device
 
@@ -921,14 +930,14 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
         sas_device_pg0.Flags = cpu_to_le16(MPI2_SAS_DEVICE0_FLAGS_DEVICE_PRESENT |
                                            MPI2_SAS_DEVICE0_FLAGS_ENCL_LEVEL_VALID);
         sas_device_pg0.DeviceName = cpu_to_le64(sas_address - 1);
-        sas_device_pg0.DmaGroup = MPT3SAS_ATTACHED_DEV_HANDLE_START;
+        sas_device_pg0.DmaGroup = sas_device_pg0.ParentDevHandle;
         sas_device_pg0.MaxPortConnections = 0x1;
     } else if (handle >= MPT3SAS_EXPANDER_HANDLE_START &&
             handle < MPT3SAS_EXPANDER_HANDLE_START + s->expander.count) {
         uint8_t expander_idx = handle - MPT3SAS_EXPANDER_HANDLE_START;
 
         sas_device_pg0.EnclosureHandle = MPT3SAS_EXPANDER_ENCLOSURE_HANDLE + expander_idx;
-        sas_device_pg0.AttachedPhyIdentifier = MPT3SAS_EXPANDER_PORT_START_PHY; //TODO same with physical io controller
+        sas_device_pg0.AttachedPhyIdentifier = 0; //TODO same with physical io controller
         sas_device_pg0.SASAddress = cpu_to_le64(MPT3SAS_EXPANDER_DEFAULT_SAS_ADDR + expander_idx);
         sas_device_pg0.DeviceInfo = mpt3sas_get_sas_expander_device_info(s, expander_idx,
                                                                         &sas_device_pg0.PhysicalPort,
@@ -938,7 +947,7 @@ static size_t mpt3sas_config_sas_device_0(MPT3SASState *s, uint8_t **data, int a
         sas_device_pg0.PhyNum = sas_device_pg0.ParentDevHandle - MPT3SAS_IOC_HANDLE_START;
         sas_device_pg0.Flags = cpu_to_le16(MPI2_SAS_DEVICE0_FLAGS_DEVICE_PRESENT | MPI2_SAS_DEVICE0_FLAGS_ENCL_LEVEL_VALID);
         sas_device_pg0.DmaGroup = MPT3SAS_EXPANDER_HANDLE_START;
-        sas_device_pg0.MaxPortConnections = s->expander.count ? s->expander.upstream_phys : MPT3SAS_NUM_PHYS;
+        sas_device_pg0.MaxPortConnections = s->expander.upstream_phys;
         sas_device_pg0.DeviceName = cpu_to_le64(MPT3SAS_EXPANDER_DEFAULT_SAS_ADDR - 1);
     } else {
         sas_device_pg0.DevHandle = 0xFFFF;
@@ -988,7 +997,7 @@ static size_t mpt3sas_config_sas_phy_0(MPT3SASState *s, uint8_t **data, int addr
     //sas_phy_pg0.AttachedDeviceInfo = device_info;
     switch (device_info & MPI2_SAS_DEVICE_INFO_MASK_DEVICE_TYPE) {
     case MPI2_SAS_DEVICE_INFO_EDGE_EXPANDER:
-        sas_phy_pg0.AttachedPhyIdentifier = phy_number % s->expander.upstream_phys + s->expander.downstream_phys;
+        sas_phy_pg0.AttachedPhyIdentifier = s->expander.downstream_start_phy + phy_number;
         break;
     case MPI2_SAS_DEVICE_INFO_END_DEVICE:
         sas_phy_pg0.AttachedPhyIdentifier = 0;
@@ -1126,8 +1135,10 @@ static size_t mpt3sas_config_sas_expander_1(MPT3SASState *s, uint8_t **data, int
 
         trace_mpt3sas_sas_expander_config_page_1(expander_idx, phy_id);
 
-        if ((phy_id >= s->expander.downstream_start_phy && phy_id < s->expander.downstream_phys) ||
-            phy_id == s->expander.all_phys - 1) {
+        if ((phy_id >= s->expander.downstream_start_phy && phy_id < s->expander.downstream_start_phy + s->expander.downstream_phys - 1) ||
+            (phy_id >= s->expander.downstream_start_phy && phy_id < s->expander.upstream_start_phy) ||
+            (phy_id >= s->expander.upstream_start_phy + s->expander.upstream_phys && phy_id <= s->expander.all_phys - 1)/* ||
+            phy_id == s->expander.all_phys - 1*/) {
             uint32_t device_info;
             uint32_t scsi_id = EXP_PHY_TO_SCSI_ID(s, expander_idx, phy_id);
 
@@ -1155,13 +1166,6 @@ static size_t mpt3sas_config_sas_expander_1(MPT3SASState *s, uint8_t **data, int
             exp_pg1.AttachedPhyInfo = MPI2_SAS_APHYINFO_REASON_POWER_ON;
             exp_pg1.ExpanderDevHandle = MPT3SAS_EXPANDER_HANDLE_START + expander_idx;
             exp_pg1.DiscoveryInfo = MPI2_SAS_EXPANDER1_DISCINFO_LINK_STATUS_CHANGE;
-        } else if (phy_id >= s->expander.upstream_start_phy + s->expander.upstream_phys && (phy_id < s->expander.downstream_start_phy || phy_id < s->expander.all_phys - 1)) {
-            exp_pg1.AttachedDeviceInfo =0;
-            exp_pg1.AttachedDevHandle = 0;
-            exp_pg1.NegotiatedLinkRate = MPI2_SAS_NEG_LINK_RATE_UNKNOWN_LINK_RATE;
-            exp_pg1.AttachedPhyInfo = 0;
-            exp_pg1.ExpanderDevHandle = 0;
-            exp_pg1.DiscoveryInfo = 0;
         } else {
             return -1;
         }
@@ -1349,7 +1353,7 @@ static void mpt3sas_msix_notify(MPT3SASState *s, uint8_t vector)
 {
     PCIDevice *pdev = PCI_DEVICE(s);
 
-    if (s->msix_in_use && msix_enabled(pdev)) {
+    if (msix_enabled(pdev)) {
         trace_mpt3sas_msix_notify(vector);
         //s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
         msix_notify(pdev, vector);
@@ -1364,9 +1368,10 @@ static void mpt3sas_clear_reply_descriptor_int(MPT3SASState *s, uint8_t msix_ind
 
     if (s->reply_post[msix_index].host_index == s->reply_post[msix_index].ioc_index) {
         trace_mpt3sas_clear_reply_descriptor_int(s->intr_status);
+
+        smp_wmb();
         // host reply post queue is empty
         s->intr_status &= ~MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
-        smp_wmb();
         mpt3sas_update_interrupt(s);
     }
 }
@@ -1433,33 +1438,34 @@ static void mpt3sas_post_reply(MPT3SASState *s, uint16_t smid, uint8_t msix_inde
 
     //Update reply_free_ioc_index
     s->reply_free_ioc_index = (s->reply_free_ioc_index == s->reply_free_queue_depth - 1) ? 0 : s->reply_free_ioc_index + 1;
+    trace_mpt3sas_reply_free_queue_ioc_update(s->reply_free_ioc_index, s->reply_free_host_index);
 
     descriptor.AddressReply.ReplyFlags = MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY;
     descriptor.AddressReply.MSIxIndex = msix_index;
     descriptor.AddressReply.SMID = smid;
-    descriptor.AddressReply.ReplyFrameAddress = cpu_to_le32(reply_address_lo);
+    descriptor.AddressReply.ReplyFrameAddress = reply_address_lo;
 
     //Write reply descriptor to reply post queue.1
-    stq_le_pci_dma(pci, s->reply_post[msix_index].base + s->reply_post[msix_index].ioc_index * sizeof(uint64_t), descriptor.Words);
-    s->reply_post[msix_index].ioc_index = (s->reply_post[msix_index].ioc_index == s->reply_descriptor_post_queue_depth - 1) ? 0 : s->reply_post[msix_index].ioc_index + 1;
+    stq_le_pci_dma(pci, s->reply_post[msix_index].base + s->reply_post[msix_index].ioc_index * sizeof(descriptor), descriptor.Words);
 
-    stq_le_pci_dma(pci, s->reply_post[msix_index].base + s->reply_post[msix_index].ioc_index * sizeof(uint64_t), 0xFFFFFFFFFFFFFFFF);
+    s->reply_post[msix_index].ioc_index = (s->reply_post[msix_index].ioc_index == s->reply_descriptor_post_queue_depth - 1) ? 0 : s->reply_post[msix_index].ioc_index + 1;
+    trace_mpt3sas_reply_post_queue_ioc_update(msix_index, s->reply_post[msix_index].base, s->reply_post[msix_index].ioc_index, s->reply_post[msix_index].host_index);
+
+    stq_le_pci_dma(pci, s->reply_post[msix_index].base + s->reply_post[msix_index].ioc_index * sizeof(uint64_t), 0xFFFFFFFF0000000F);
+
+    assert(s->reply_post[msix_index].ioc_index != s->reply_post[msix_index].host_index);
 
     s->completed_commands++;
     trace_mpt3sas_post_reply_completed(smid);
-
-    // if the interrupt bit is already set, leave it up
-    //if (s->intr_status & MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT)
-    //    return;
-
-    if (s->doorbell_state == DOORBELL_WRITE)
-        s->doorbell_state = DOORBELL_NONE;
 
     if (s->msix_in_use) {
         mpt3sas_msix_notify(s, msix_index);
     } else {
         s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
-        s->intr_status |= MPI2_HIS_IOC2SYS_DB_STATUS;
+        if (s->doorbell_state == DOORBELL_WRITE) {
+            s->doorbell_state = DOORBELL_NONE;
+            s->intr_status |= MPI2_HIS_IOC2SYS_DB_STATUS;
+        }
         mpt3sas_update_interrupt(s);
     }
 }
@@ -1484,10 +1490,10 @@ static void mpt3sas_scsi_io_reply(MPT3SASState *s, uint16_t smid, uint16_t msix_
 
     // Make sure the next queue slot is unused. I found that the head of reply descriptor post queue held by driver
     // is increased a bit fast than the tail of reply descriptor post queue held by IOC.
-    stq_le_pci_dma(PCI_DEVICE(s), s->reply_post[msix_index].base + s->reply_post[msix_index].ioc_index * sizeof(uint64_t), 0xFFFFFFFFFFFFFFFF);
+    stq_le_pci_dma(PCI_DEVICE(s), s->reply_post[msix_index].base + s->reply_post[msix_index].ioc_index * sizeof(uint64_t), 0xFFFFFFFF0000000F);
 
-    //s->intr_status |= MPI2_HIS_REPLY_DESCRIPTOR_INTERRUPT;
-    //mpt3sas_update_interrupt(s);
+    assert(s->reply_post[msix_index].ioc_index != s->reply_post[msix_index].host_index);
+
 }
 
 static void mpt3sas_reply(MPT3SASState *s, MPI2DefaultReply_t *reply)
@@ -1497,8 +1503,8 @@ static void mpt3sas_reply(MPT3SASState *s, MPI2DefaultReply_t *reply)
         s->doorbell_reply_idx = 0;
         s->doorbell_reply_size = reply->MsgLength * 2;
         memcpy(s->doorbell_reply, reply, s->doorbell_reply_size * 2);
-        s->intr_status |= MPI2_HIS_IOC2SYS_DB_STATUS;
         smp_wmb();
+        s->intr_status |= MPI2_HIS_IOC2SYS_DB_STATUS;
         mpt3sas_update_interrupt(s);
     }
 }
@@ -1850,10 +1856,11 @@ static void mpt3sas_handle_ioc_init(MPT3SASState *s, Mpi2IOCInitRequest_t *req)
 static void mpt3sas_handle_event_notification(MPT3SASState *s, uint16_t smid, uint8_t msix_index, Mpi2EventNotificationRequest_t *req)
 {
     Mpi2EventNotificationReply_t reply;
+    uint32_t event_len = offsetof(Mpi2EventNotificationReply_t, EventData);
 
     memset(&reply, 0, sizeof(reply));
-    reply.EventDataLength = cpu_to_le16(sizeof(reply.EventData) / 4);
-    reply.MsgLength = sizeof(reply) / 4;
+    reply.EventDataLength = 0;
+    reply.MsgLength = event_len / 4;
     reply.Function = req->Function;
     reply.MsgFlags = req->MsgFlags;
     reply.Event = cpu_to_le16(MPI2_EVENT_EVENT_CHANGE);
@@ -1920,9 +1927,9 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_i
         // Just find out the reason why fails to find the page
         page = mpt3sas_find_config_page(type, 1);
         if (page) {
-            reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_CONFIG_INVALID_PAGE);
+            reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_PAGE;
         } else {
-            reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_CONFIG_INVALID_TYPE);
+            reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_TYPE;
             trace_mpt3sas_handle_config_invalid_page(req->Action, req->Header.PageType,
                 req->Header.PageNumber, req->Header.PageLength, req->Header.PageVersion,
                 req->ExtPageType, req->ExtPageLength, le32_to_cpu(req->PageAddress));
@@ -1945,9 +1952,9 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_i
         req->Action == MPI2_CONFIG_ACTION_PAGE_WRITE_NVRAM) {
         length = page->mpt_config_build(s, NULL, req->PageAddress);
         if ((ssize_t)length < 0) {
-            reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_CONFIG_INVALID_PAGE);
+            reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_PAGE;
         } else {
-            reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_CONFIG_CANT_COMMIT);
+            reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_CANT_COMMIT;
         }
         goto out;
     }
@@ -1973,7 +1980,7 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_i
     if (dmalen == 0) {
         length = page->mpt_config_build(s, NULL, req->PageAddress);
         if ((ssize_t)length < 0) {
-            reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_CONFIG_INVALID_PAGE);
+            reply.IOCStatus = MPI2_IOCSTATUS_CONFIG_INVALID_PAGE;
             goto out;
         } else {
             goto done;
@@ -2008,7 +2015,6 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_i
         assert(data[2] == page->number);
         reply.IOCStatus = cpu_to_le16(MPI2_IOCSTATUS_SUCCESS);
         trace_mpt3sas_config_page_write(req->Header.PageType, req->Header.PageNumber, pa, MIN(length, dmalen));
-        smp_wmb();
         pci_dma_write(pci, pa, data, MIN(length, dmalen));
         goto done;
     }
@@ -2017,7 +2023,7 @@ static void mpt3sas_handle_config(MPT3SASState *s, uint16_t smid, uint8_t msix_i
 
 done:
     if (type > MPI2_CONFIG_PAGETYPE_EXTENDED) {
-        reply.ExtPageLength = cpu_to_le16(length / 4);
+        reply.ExtPageLength = length / 4;
         reply.ExtPageType = req->ExtPageType;
     } else {
         reply.Header.PageLength = length / 4;
@@ -2876,6 +2882,7 @@ static void mpt3sas_handle_request(MPT3SASState *s)
     switch (hdr->Function) {
         case MPI2_FUNCTION_EVENT_NOTIFICATION:
             mpt3sas_handle_event_notification(s, smid, msix_index, (Mpi2EventNotificationRequest_t *)req);
+            sleep(1);
             break;
         case MPI2_FUNCTION_SCSI_IO_REQUEST:
             mpt3sas_handle_scsi_io_request(s, smid, msix_index, (Mpi25SCSIIORequest_t *)req, addr);
@@ -3146,17 +3153,19 @@ static void mpt3sas_mmio_write(void *opaque, hwaddr addr,
             break;
         case MPI2_REPLY_FREE_HOST_INDEX_OFFSET:
             s->reply_free_host_index = val;
+            trace_mpt3sas_reply_free_queue_host_update(s->reply_free_ioc_index, s->reply_free_host_index);
             break;
         case MPI2_REPLY_POST_HOST_INDEX_OFFSET:
         {
             uint8_t msix_index = (val & MPI2_RPHI_MSIX_INDEX_MASK) >> 24;
-            s->reply_post[msix_index].host_index = val & MPI2_REPLY_POST_HOST_INDEX_MASK;
 
-            trace_mpt3sas_reply_post_queue(msix_index,
+            s->reply_post[msix_index].host_index = val & MPI2_REPLY_POST_HOST_INDEX_MASK;
+            trace_mpt3sas_reply_post_queue_host_update(msix_index,
                     s->reply_post[msix_index].base,
-                    s->reply_post[msix_index].host_index,
-                    s->reply_post[msix_index].ioc_index);
-            if (s->reply_post[msix_index].host_index ==
+                    s->reply_post[msix_index].ioc_index,
+                    s->reply_post[msix_index].host_index);
+
+            if (s->reply_post[msix_index].host_index == 
                 (s->reply_post[msix_index].ioc_index + 1) % s->reply_descriptor_post_queue_depth) {
                 mpt3sas_set_fault(s, MPI2_IOCSTATUS_INSUFFICIENT_RESOURCES);
                 trace_mpt3sas_reply_post_queue_full();
@@ -3342,9 +3351,6 @@ static void mpt3sas_request_cancelled(SCSIRequest *sreq)
 
 static void mpt3sas_init_expander(MPT3SASState *s)
 {
-    if (!s->expander.count)
-        s->expander.count = MPT3SAS_EXPANDER_COUNT;
-
     if (!s->expander.all_phys)
         s->expander.all_phys = MPT3SAS_EXPANDER_NUM_PHYS;
 
@@ -3367,6 +3373,9 @@ static void mpt3sas_init_expander(MPT3SASState *s)
         s->expander.upstream_start_phy = 0;
         s->expander.downstream_start_phy = MPT3SAS_NUM_PHYS;
     }
+
+    trace_mpt3sas_init_expander(s->expander.count, s->expander.all_phys, s->expander.upstream_start_phy, s->expander.upstream_phys,
+                                s->expander.downstream_start_phy, s->expander.downstream_phys);
 }
 
 #if 0
@@ -3590,8 +3599,10 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
     scsi_bus_new(&s->bus, sizeof(s->bus), &dev->qdev, &mpt3sas_scsi_info, NULL);
     qbus_set_hotplug_handler(BUS(&s->bus), (DeviceState *)dev, &error_abort);
 
-    // init expander
-    mpt3sas_init_expander(s);
+    // init expander 
+    if (s->expander.count > 0) {
+        mpt3sas_init_expander(s);
+    }
 
     if (!d->hotplugged) {
         scsi_bus_legacy_handle_cmdline(&s->bus, errp);

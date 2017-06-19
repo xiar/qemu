@@ -2060,13 +2060,6 @@ static uint32_t x86_cpu_get_supported_feature_word(FeatureWord w,
         r = kvm_arch_get_supported_cpuid(kvm_state, wi->cpuid_eax,
                                                     wi->cpuid_ecx,
                                                     wi->cpuid_reg);
-        if (w == FEAT_1_ECX || w == FEAT_1_EDX) {
-            // fixme: Get supported cpuid from host
-            uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
-
-            host_cpuid(w, 0, &eax, &ebx, &ecx, &edx);
-            r |= (w == FEAT_1_ECX) ? ecx : edx;
-        }
     } else if (tcg_enabled()) {
         r = wi->tcg_features;
     } else {
