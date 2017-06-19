@@ -37,6 +37,7 @@
 
 #include <hw/ide/internal.h>
 
+
 /* These values were based on a Seagate ST3500418AS but have been modified
    to make more sense in QEMU */
 static const int smart_attributes[][12] = {
@@ -57,6 +58,18 @@ static const int smart_attributes[][12] = {
     { 0xad, 0x12, 0x00, 0x64, 0x64, 0x13, 0x00, 0x4f, 0x00, 0x00, 0x00, 0x00},
     /* airflow-temperature-celsius */
     { 190,  0x03, 0x00, 0x45, 0x45, 0x1f, 0x00, 0x1f, 0x1f, 0x00, 0x00, 0x32},
+};
+
+static void set_identify_security(IDEState *s);
+
+static const struct SecurityState security_states[7] = {
+    [SEC0] = { 0, 0, 0 },
+    [SEC1] = { 0, 0, 0 },
+    [SEC2] = { 0, 0, 1 },
+    [SEC3] = { 1, 1, 0 },
+    [SEC4] = { 1, 1, 0 },
+    [SEC5] = { 1, 0, 0 },
+    [SEC6] = { 1, 0, 1 }
 };
 
 static void ide_dummy_transfer_stop(IDEState *s);
@@ -150,8 +163,8 @@ static void ide_identify(IDEState *s)
 
     put_le16(p + 80, 0xf0); /* ata3 -> ata6 supported */
     put_le16(p + 81, 0x16); /* conforms to ata5 */
-    /* 14=NOP supported, 5=WCACHE supported, 0=SMART supported */
-    put_le16(p + 82, (1 << 14) | (1 << 5) | 1);
+    /* 14=NOP supported, 5=WCACHE supported, 1=SECURITY supported, 0=SMART supported */
+    put_le16(p + 82, (1 << 14) | (1 << 5) | (1 << 1) | 1);
     /* 13=flush_cache_ext,12=flush_cache,10=lba48 */
     put_le16(p + 83, (1 << 14) | (1 << 13) | (1 <<12) | (1 << 10));
     /* 14=set to 1, 8=has WWN, 1=SMART self test, 0=SMART error logging */
@@ -161,6 +174,7 @@ static void ide_identify(IDEState *s)
         put_le16(p + 84, (1 << 14) | 0);
     }
     /* 14 = NOP supported, 5=WCACHE enabled, 0=SMART feature set enabled */
+    /* Check 1 = SECURITY feature set enabled or not */
     if (blk_enable_write_cache(s->blk)) {
         put_le16(p + 85, (1 << 14) | (1 << 5) | 1);
     } else {
@@ -201,6 +215,8 @@ static void ide_identify(IDEState *s)
     s->identify_set = 1;
 
 fill_buffer:
+    /* Set Security Feature set related values */
+    set_identify_security(s);
     memcpy(s->io_buffer, p, sizeof(s->identify_data));
 }
 
@@ -1296,6 +1312,19 @@ static void ide_reset(IDEState *s)
     s->media_changed = 0;
 }
 
+static void set_identify_security(IDEState *s)
+{
+    SecurityState state = security_states[s->security_sec];
+    if (s->identify_set) {
+        s->identify_data[170] ^= (-state.enabled ^ s->identify_data[170]) & (1 << 1);
+        s->identify_data[256] = (s->master_pass_capability << 8) |
+                                 !!(s->pass_attempt_counter) << 4 |
+                                 (state.frozen << 3) | (state.locked << 2)
+                                 | (state.enabled << 1) | 1;  
+    }
+    return;
+}
+
 static bool cmd_nop(IDEState *s, uint8_t cmd)
 {
     return true;
@@ -1601,6 +1630,256 @@ abort_cmd:
     return true;
 }
 
+static bool cmd_security_set_pass(IDEState *s, uint8_t cmd)
+{
+    s->status = READY_STAT | SEEK_STAT;
+    ide_transfer_start(s, s->io_buffer, 512, ide_transfer_stop);
+    ide_set_irq(s->bus);
+    /*
+     * Check IDENTIFIER bit in io_buffer
+     *
+     * IDENTIFIER == 1, set Master password
+     * Store Master password identifier word
+     * Security enable bit and Master password capability bit remain unchanged
+     * */
+    if ((s->io_buffer[0] & 0x01)) {
+        memcpy(s->security_password_master, s->io_buffer + 2, SECURITY_PASS_LENGTH);
+        memcpy(s->master_pass_identifier, s->io_buffer + 34, 2);
+    /*
+     * IDENTIFIER == 0, set User password
+     * Change security state to SEC5
+     * Update Master password capability bit with value from io_buffer
+     * */
+    } else {
+        memcpy(s->security_password_user, s->io_buffer + 2, SECURITY_PASS_LENGTH);
+        s->security_sec = SEC5;
+        s->master_pass_capability = s->io_buffer[1] & 0x01;
+    }
+
+    return false;
+}
+
+static bool cmd_security_erase_prepare(IDEState *s, uint8_t cmd)
+{
+    /*
+     * Abort the command if the device is in frozen mode, i.e., SEC2 or SEC6
+     * Set erase_prepare_succeed bit to 1
+     * */
+    if (s->security_sec == SEC2 || s->security_sec == SEC6) {
+        ide_abort_command(s);
+        return true;
+    }
+    s->erase_prepare_succeed = 1;
+    ide_set_irq(s->bus);
+    return true;
+}
+
+static void ide_erase_cb(void *opaque, int ret) {
+    IDEState *s = opaque;
+
+    if (ret != 0) {
+        if (ide_handle_rw_error(s, -ret, IDE_RETRY_PIO)) {
+            return;
+        }
+    }
+    block_acct_done(blk_get_stats(s->blk), &s->acct);
+    ide_set_irq(s->bus);
+}
+
+static bool cmd_security_erase_unit(IDEState *s, uint8_t cmd)
+{
+    /*
+     * If the previous SECURITY ERASE PREPARE command didn't succeed,
+     * abort the command
+     * */
+    if (!s->erase_prepare_succeed) {
+        goto abort_cmd;
+    }
+    s->erase_prepare_succeed = 0;
+    s->status = READY_STAT | SEEK_STAT;
+    ide_transfer_start(s, s->io_buffer, 512, ide_transfer_stop);
+    ide_set_irq(s->bus);
+    SecurityState state = security_states[s->security_sec];
+    /*
+     * Check the enable bit in security state
+     * If enable == 0 && specify User password in io_buffer, abort the command
+     * */
+    if (!state.enabled) {
+        if (!(s->io_buffer[0] & 0x01)) {
+            goto abort_cmd;
+        }
+    }
+    /*
+     * If enable == 1, check IDENTIFIER bit in io_buffer
+     * */
+    else {
+        /*
+         * IDENTIFIER == 1, compare stored Master password
+         * */
+        if (s->io_buffer[0] & 0x01) {
+            if (memcmp(s->io_buffer + 2, s->security_password_master, SECURITY_PASS_LENGTH)) {
+                goto abort_cmd;
+            }
+        /*
+         * IDENTIFIER == 0, compare stored User password
+         * */
+        } else if (memcmp(s->io_buffer + 2, s->security_password_user, SECURITY_PASS_LENGTH)) {
+            goto abort_cmd;
+        }
+    }
+    /* Write binary zero to disk. */
+    uint64_t remain_size = s->nb_sectors;
+    uint32_t write_size = 1024 * 1024;
+    while (remain_size > 0) {
+        write_size = (remain_size - write_size) > 0 ? write_size : remain_size;
+        block_acct_start(blk_get_stats(s->blk), &s->acct,
+                         s->nb_sectors * BDRV_SECTOR_SIZE, BLOCK_ACCT_WRITE);
+        s->pio_aiocb = blk_aio_write_zeroes(s->blk,
+                                (s->nb_sectors - remain_size),
+                                 write_size,
+                                 0, ide_erase_cb, s);
+        remain_size -= write_size;
+    }
+    /*
+     * Set security state back to SEC1(Disabled/Unlock/Unfrozen)
+     * Disable User password
+     * */
+    s->security_sec = SEC1;
+    memset(s->security_password_user, 0, SECURITY_PASS_LENGTH);
+    s->pio_aiocb = NULL;
+
+    return false;
+abort_cmd:
+    ide_abort_command(s);
+    return true;
+}
+
+static bool cmd_security_unlock(IDEState *s, uint8_t cmd)
+{
+    /*
+     * SECURITY UNLOCK command only works under SEC4 or SEC5 
+     * If Security count expired bit is set, abort the command
+     */
+    if ((s->security_sec != SEC4 && s->security_sec != SEC5) || !s->pass_attempt_counter) {
+        goto abort_cmd;
+    }
+    s->status = READY_STAT | SEEK_STAT;
+    ide_transfer_start(s, s->io_buffer, 512, ide_transfer_stop);
+    ide_set_irq(s->bus);
+    SecurityState state = security_states[s->security_sec];
+    /* Check enable bit in security state */
+    /* 
+     * enabled == 0, if IDENTIFIER == 0(Compare user password), abort the command
+     * */
+    if (!state.enabled) {
+        if (!(s->io_buffer[0] & 0x01)) {
+            goto abort_cmd;
+        }
+    }
+    /*
+     * enabled == 1, check Master password capability
+     * */
+    else {
+        /*
+         * Master password capability == 1(Maximum)
+         * If IDENTIFIER == 1, abort the command
+         * If IDENTIFIER == 0, compare User password
+         * */
+        if (s->master_pass_capability) {
+            if (s->io_buffer[0] & 0x01) {
+                goto abort_cmd;
+            } else if (memcmp(s->io_buffer + 2, 
+                       s->security_password_user, SECURITY_PASS_LENGTH)) {
+                goto invalid_pass;
+            }
+        }
+        /*
+         * Master password capability == 0(High)
+         * If IDENTIFIER == 1, compare Master password
+         * If IDENTIFIER == 0, compare User password
+         * */
+        else {
+            if (s->io_buffer[0] & 0x01) {
+                if (memcmp(s->io_buffer + 2, s->security_password_master, SECURITY_PASS_LENGTH)) {
+                    goto invalid_pass;
+                }
+            } else if (memcmp(s->io_buffer + 2,
+                       s->security_password_user, SECURITY_PASS_LENGTH)){
+                goto invalid_pass;
+            }
+        }
+    }
+    s->security_sec = SEC5;
+    return false;
+/*
+ * Under wrong password input, decrease password attempt counter
+ * */
+invalid_pass:
+    s->pass_attempt_counter--;
+abort_cmd:
+    ide_abort_command(s);
+    return true;
+}
+
+static bool cmd_security_disable_password(IDEState *s, uint8_t cmd)
+{
+    s->status = READY_STAT | SEEK_STAT;
+    ide_transfer_start(s, s->io_buffer, 512, ide_transfer_stop);
+    ide_set_irq(s->bus);
+    SecurityState state = security_states[s->security_sec];
+    /*
+     * If SECURITY is not enabled, check IDENTIFIER bit in buffer.
+     * If IDENTIFIER=1, compare the input password with Master Password. 
+     * If IDENTIFIER=0, abort command.
+     * */
+    if (!state.enabled) {
+        if ((s->io_buffer[0] & 0x01)) {
+            if (!memcmp(s->io_buffer + 2, s->security_password_master, SECURITY_PASS_LENGTH)) {
+                s->security_sec = SEC1;
+            }
+        } else {
+            goto abort_cmd;
+        }
+    }
+    /*
+     * If SECURITY is enabled, check MASTER PASSWORD CAPABILITY bit in
+     * identify data. Then check IDENTIFIER bit in buffer.
+     * */
+    else {
+        /* MASTER PASSWORD CAPABILITY == 1
+         * If IDENTIFIER=1, abort command
+         * If IDENTIFIER=0, compare User Password
+         */
+        if (s->identify_data[256] & 0x80) {
+            if (s->io_buffer[0] & 0x01) {
+                goto abort_cmd;
+            } else if (memcmp(s->io_buffer + 2, s->security_password_user, SECURITY_PASS_LENGTH)) {
+                    goto abort_cmd;
+            }
+        }
+        /* MASTER PASSWORD CAPABILITY == 0
+         * If IDENTIFIER=1, compare Master Password
+         * If IDENTIFIER=0, compare User Password
+         */
+        else {
+            if (s->io_buffer[0] & 0x01) {
+                if (memcmp(s->io_buffer + 2, s->security_password_master, SECURITY_PASS_LENGTH)) {
+                    goto abort_cmd;
+                }
+            } else if (memcmp(s->io_buffer + 2, s->security_password_user, SECURITY_PASS_LENGTH)) {
+                    goto abort_cmd;
+            }
+        }
+        s->security_sec = SEC1;
+    }
+    memset(s->security_password_user, 0, SECURITY_PASS_LENGTH);
+    s->master_pass_capability = 0;
+    return false;
+
+abort_cmd:
+    ide_abort_command(s);
+    return false;
+}
 
 /*** ATAPI commands ***/
 
@@ -1987,6 +2266,11 @@ static const struct {
     [IBM_SENSE_CONDITION]         = { cmd_ibm_sense_condition, CFA_OK | SET_DSC },
     [CFA_WEAR_LEVEL]              = { cmd_cfa_erase_sectors, HD_CFA_OK | SET_DSC },
     [WIN_READ_NATIVE_MAX]         = { cmd_read_native_max, HD_CFA_OK | SET_DSC },
+    [WIN_SECURITY_SET_PASS]       = { cmd_security_set_pass, HD_OK},
+    [WIN_SECURITY_ERASE_PREPARE]  = { cmd_security_erase_prepare, HD_OK},
+    [WIN_SECURITY_ERASE_UNIT]     = { cmd_security_erase_unit, HD_OK},
+    [WIN_SECURITY_DISABLE]        = { cmd_security_disable_password, HD_OK },
+    [WIN_SECURITY_UNLOCK]         = { cmd_security_unlock, HD_OK}
 };
 
 static bool ide_cmd_permitted(IDEState *s, uint32_t cmd)
@@ -2405,6 +2689,8 @@ int ide_init_drive(IDEState *s, BlockBackend *blk, IDEDriveKind kind,
     s->smart_autosave = 1;
     s->smart_errors = 0;
     s->smart_selftest_count = 0;
+    s->security_sec = SEC1;
+    s->pass_attempt_counter = 5;
     if (kind == IDE_CD) {
         blk_set_dev_ops(blk, &ide_cd_block_ops, s);
         blk_set_guest_block_size(blk, 2048);
@@ -2847,3 +3133,4 @@ void ide_drive_get(DriveInfo **hd, int n)
         hd[i] = drive_get_by_index(IF_IDE, i);
     }
 }
+
