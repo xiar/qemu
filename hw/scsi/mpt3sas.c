@@ -34,6 +34,7 @@
 #include "trace/control.h"
 #include "qemu/log.h"
 #include "trace.h"
+#include "qapi/error.h"
 
 #define NAA_LOCALLY_ASSIGNED_ID 0x3ULL
 #define IEEE_COMPANY_LOCALLY_ASSIGNED 0x51866d
@@ -3498,6 +3499,25 @@ static int mpt3sas_topology_cache_thread_loop(MPT3SASState *s)
     return 0;
 }
 
+static void mpt3sas_qemu_hotplug(HotplugHandler *hotplug_dev, DeviceState *dev,
+                                 Error **errp)
+{
+    MPT3SASState *s = MPT3SAS(hotplug_dev);
+    // SCSIDevice *sd = SCSI_DEVICE(dev);
+
+    mpt3sas_topology_cache_thread_loop(s);
+}
+
+static void mpt3sas_qemu_hotunplug(HotplugHandler *hotplug_dev, DeviceState *dev,
+                                   Error **errp)
+{
+    MPT3SASState *s = MPT3SAS(hotplug_dev);
+    // SCSIDevice *sd = SCSI_DEVICE(dev);
+
+    qdev_simple_device_unplug_cb(hotplug_dev, dev, errp);
+    mpt3sas_topology_cache_thread_loop(s);
+}
+
 static void mpt3sas_topology_cache_clear(MPT3SASState *s)
 {
     qemu_cond_destroy(&s->topology_cache->cond);
@@ -3508,16 +3528,16 @@ static void mpt3sas_topology_cache_clear(MPT3SASState *s)
     s->topology_cache = NULL;
 };
 
-static void *mpt3sas_topology_cache_thread(void *arg)
-{
-    MPT3SASState *s = arg;
-
-    qemu_thread_get_self(&s->topology_cache->thread);
-
-    while (!mpt3sas_topology_cache_thread_loop(s));
-    mpt3sas_topology_cache_clear(s);
-    return NULL;
-}
+//static void *mpt3sas_topology_cache_thread(void *arg)
+//{
+//    MPT3SASState *s = arg;
+//
+//    qemu_thread_get_self(&s->topology_cache->thread);
+//
+//    while (!mpt3sas_topology_cache_thread_loop(s));
+//    mpt3sas_topology_cache_clear(s);
+//    return NULL;
+//}
 
 static void mpt3sas_topology_cache_init(MPT3SASState *s)
 {
@@ -3527,7 +3547,7 @@ static void mpt3sas_topology_cache_init(MPT3SASState *s)
     qemu_mutex_init(&s->topology_cache->mutex);
 
     s->topology_cache->cached_devices = mpt3sas_topology_scan(s);
-    qemu_thread_create(&s->topology_cache->thread, "MPT3SAS Topology Cache", mpt3sas_topology_cache_thread, s, QEMU_THREAD_DETACHED);
+    // qemu_thread_create(&s->topology_cache->thread, "MPT3SAS Topology Cache", mpt3sas_topology_cache_thread, s, QEMU_THREAD_DETACHED);
 }
 
 static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
@@ -3606,6 +3626,7 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
     QTAILQ_INIT(&s->pending);
 
     scsi_bus_new(&s->bus, sizeof(s->bus), &dev->qdev, &mpt3sas_scsi_info, NULL);
+    qbus_set_hotplug_handler(BUS(&s->bus), (DeviceState *)dev, &error_abort);
 
     // init expander
     mpt3sas_init_expander(s);
@@ -3630,7 +3651,8 @@ static void mpt3sas_scsi_uninit(PCIDevice *dev)
     }
 
     s->topology_cache->exit = 1;
-    qemu_thread_join(&s->topology_cache->thread);
+    // qemu_thread_join(&s->topology_cache->thread);
+    mpt3sas_topology_cache_clear(s);
 
     s->event_queue->exit = 0;
 }
@@ -3655,6 +3677,7 @@ static void mpt3sas3008_class_init(ObjectClass *oc, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     PCIDeviceClass *pc = PCI_DEVICE_CLASS(oc);
+    HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
 
     pc->realize = mpt3sas_scsi_init;
     pc->exit = mpt3sas_scsi_uninit;
@@ -3678,6 +3701,9 @@ static void mpt3sas3008_class_init(ObjectClass *oc, void *data)
     dc->reset = mpt3sas_reset;
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
     dc->desc = "LSI SAS 3008";
+
+    hc->plug = mpt3sas_qemu_hotplug;
+    hc->unplug = mpt3sas_qemu_hotunplug;
 }
 
 static const TypeInfo mpt3sas_info = {
@@ -3685,6 +3711,10 @@ static const TypeInfo mpt3sas_info = {
     .parent = TYPE_PCI_DEVICE,
     .instance_size = sizeof(MPT3SASState),
     .class_init = mpt3sas3008_class_init,
+    .interfaces = (InterfaceInfo[]) {
+        { TYPE_HOTPLUG_HANDLER },
+        { }
+    }
 };
 
 static void mpt3sas_register_types(void)
