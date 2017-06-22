@@ -3358,8 +3358,12 @@ static uint32_t mpt3sas_config_read(PCIDevice *pci_dev, uint32_t address, int le
     return val;
 }
 
-static void mpt3sas_hotplug(MPT3SASState *s, SCSIDevice *d, Error **errp)
+static void mpt3sas_hotplug(HotplugHandler *sptr, DeviceState *dptr, Error **errp)
 {
+
+    MPT3SASState *s = MPT3SAS(sptr);
+    SCSIDevice *d = SCSI_DEVICE(dptr);
+
     uint32_t event_data_length = 0;
     uint32_t scsi_id = d->id;
     trace_mpt3sas_hotplug(d->wwn, scsi_id);
@@ -3394,11 +3398,17 @@ static void mpt3sas_hotplug(MPT3SASState *s, SCSIDevice *d, Error **errp)
     mpt3sas_send_discovery_event(s, MPI2_EVENT_SAS_DISC_RC_COMPLETED);
 }
 
-static void mpt3sas_hotunplug(MPT3SASState *s, SCSIDevice *d, Error **errp)
+static void mpt3sas_hotunplug(HotplugHandler *sptr, DeviceState *dptr, Error **errp)
 {
+
+    MPT3SASState *s = MPT3SAS(sptr);
+    SCSIDevice *d = SCSI_DEVICE(dptr);
+
     uint32_t event_data_length = 0;
     uint32_t scsi_id = d->id;
     trace_mpt3sas_hotunplug(d->wwn, scsi_id);
+
+    qdev_simple_device_unplug_cb(sptr, dptr, errp);
 
     // 1. notify driver sas discovery start
     mpt3sas_send_discovery_event(s, MPI2_EVENT_SAS_DISC_RC_STARTED);
@@ -3436,120 +3446,6 @@ static void mpt3sas_hotunplug(MPT3SASState *s, SCSIDevice *d, Error **errp)
     mpt3sas_send_discovery_event(s, MPI2_EVENT_SAS_DISC_RC_COMPLETED);
 }
 
-static SCSIDevice *mpt3sas_topology_scan(MPT3SASState *s)
-{
-    int scsi_target_nums = s->expander.downstream_phys * s->expander.count;
-    SCSIDevice *newly_scaned_devices = g_new0(SCSIDevice, scsi_target_nums);
-    SCSIDevice *curr_device = NULL;
-    int i;
-    for (i = 0; i < scsi_target_nums; i++) {
-        curr_device = scsi_device_find(&s->bus, 0, i, 0);
-        if (curr_device != NULL) {
-            g_memmove(newly_scaned_devices + i, curr_device, sizeof(SCSIDevice));
-        }
-    }
-    return newly_scaned_devices;
-}
-
-static int mpt3sas_topology_cache_thread_loop(MPT3SASState *s)
-{
-    MPT3SASTopologyCache *topo = s->topology_cache;
-
-    if (topo->exit) {
-        return -1;
-    }
-
-    qemu_mutex_lock(&topo->mutex);
-
-    // scan all devices
-    SCSIDevice *newly_scaned_devices = mpt3sas_topology_scan(s);
-
-    // compare all devices
-    uint64_t curr_wwn, prev_wwn;
-    int i;
-    int scsi_target_nums = MPT3SAS_EXPANDER_NUM_SLOTS * MPT3SAS_EXPANDER_COUNT;
-    for (i = 0; i < scsi_target_nums; i++) {
-        curr_wwn = (newly_scaned_devices + i)->wwn;
-        prev_wwn = (topo->cached_devices + i)->wwn;
-
-        if (curr_wwn == prev_wwn) {
-            // Do nothing
-        }
-        else if (curr_wwn == 0) {
-            trace_mpt3sas_sas_topology_change("remove", i, prev_wwn, curr_wwn);
-            mpt3sas_hotunplug(s, topo->cached_devices + i);
-        }
-        else if (prev_wwn == 0) {
-            trace_mpt3sas_sas_topology_change("add", i, prev_wwn, curr_wwn);
-            mpt3sas_hotplug(s, newly_scaned_devices + i);
-        }
-        else {
-            trace_mpt3sas_sas_topology_change("replace", i, prev_wwn, curr_wwn);
-            mpt3sas_hotunplug(s, topo->cached_devices + i);
-            mpt3sas_hotplug(s, newly_scaned_devices + i);
-        }
-    }
-
-    // update cached devices
-    g_free(s->topology_cache->cached_devices);
-    s->topology_cache->cached_devices = newly_scaned_devices;
-    s->topology_cache->scsi_target_nums = scsi_target_nums;
-
-    qemu_mutex_unlock(&topo->mutex);
-
-    return 0;
-}
-
-static void mpt3sas_qemu_hotplug(HotplugHandler *hotplug_dev, DeviceState *dev,
-                                 Error **errp)
-{
-    MPT3SASState *s = MPT3SAS(hotplug_dev);
-    // SCSIDevice *sd = SCSI_DEVICE(dev);
-
-    mpt3sas_topology_cache_thread_loop(s);
-}
-
-static void mpt3sas_qemu_hotunplug(HotplugHandler *hotplug_dev, DeviceState *dev,
-                                   Error **errp)
-{
-    MPT3SASState *s = MPT3SAS(hotplug_dev);
-    // SCSIDevice *sd = SCSI_DEVICE(dev);
-
-    qdev_simple_device_unplug_cb(hotplug_dev, dev, errp);
-    mpt3sas_topology_cache_thread_loop(s);
-}
-
-static void mpt3sas_topology_cache_clear(MPT3SASState *s)
-{
-    qemu_cond_destroy(&s->topology_cache->cond);
-    qemu_mutex_destroy(&s->topology_cache->mutex);
-    g_free(s->topology_cache->cached_devices);
-    s->topology_cache->cached_devices = NULL;
-    g_free(s->topology_cache);
-    s->topology_cache = NULL;
-};
-
-//static void *mpt3sas_topology_cache_thread(void *arg)
-//{
-//    MPT3SASState *s = arg;
-//
-//    qemu_thread_get_self(&s->topology_cache->thread);
-//
-//    while (!mpt3sas_topology_cache_thread_loop(s));
-//    mpt3sas_topology_cache_clear(s);
-//    return NULL;
-//}
-
-static void mpt3sas_topology_cache_init(MPT3SASState *s)
-{
-    s->topology_cache = g_new0(MPT3SASTopologyCache, 1);
-
-    qemu_cond_init(&s->topology_cache->cond);
-    qemu_mutex_init(&s->topology_cache->mutex);
-
-    s->topology_cache->cached_devices = mpt3sas_topology_scan(s);
-    // qemu_thread_create(&s->topology_cache->thread, "MPT3SAS Topology Cache", mpt3sas_topology_cache_thread, s, QEMU_THREAD_DETACHED);
-}
 
 static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
 {
@@ -3635,9 +3531,6 @@ static void mpt3sas_scsi_init(PCIDevice *dev, Error **errp)
     if (!d->hotplugged) {
         scsi_bus_legacy_handle_cmdline(&s->bus, errp);
     }
-
-    // Launch topology monitor
-    mpt3sas_topology_cache_init(s);
 }
 
 static void mpt3sas_scsi_uninit(PCIDevice *dev)
@@ -3650,10 +3543,6 @@ static void mpt3sas_scsi_uninit(PCIDevice *dev)
     if (s->msix_in_use) {
         msix_uninit(dev, &s->mmio_io, &s->mmio_io);
     }
-
-    s->topology_cache->exit = 1;
-    // qemu_thread_join(&s->topology_cache->thread);
-    mpt3sas_topology_cache_clear(s);
 
     s->event_queue->exit = 0;
 }
