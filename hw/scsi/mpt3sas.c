@@ -3358,9 +3358,10 @@ static uint32_t mpt3sas_config_read(PCIDevice *pci_dev, uint32_t address, int le
     return val;
 }
 
-static void mpt3sas_hotplug(MPT3SASState *s, SCSIDevice *d, int scsi_id)
+static void mpt3sas_hotplug(MPT3SASState *s, SCSIDevice *d, Error **errp)
 {
     uint32_t event_data_length = 0;
+    uint32_t scsi_id = d->id;
     trace_mpt3sas_hotplug(d->wwn, scsi_id);
 
     // 1. notify driver sas discovery start
@@ -3393,10 +3394,10 @@ static void mpt3sas_hotplug(MPT3SASState *s, SCSIDevice *d, int scsi_id)
     mpt3sas_send_discovery_event(s, MPI2_EVENT_SAS_DISC_RC_COMPLETED);
 }
 
-static void mpt3sas_hotunplug(MPT3SASState *s, SCSIDevice *d, int scsi_id)
+static void mpt3sas_hotunplug(MPT3SASState *s, SCSIDevice *d, Error **errp)
 {
     uint32_t event_data_length = 0;
-
+    uint32_t scsi_id = d->id;
     trace_mpt3sas_hotunplug(d->wwn, scsi_id);
 
     // 1. notify driver sas discovery start
@@ -3476,16 +3477,16 @@ static int mpt3sas_topology_cache_thread_loop(MPT3SASState *s)
         }
         else if (curr_wwn == 0) {
             trace_mpt3sas_sas_topology_change("remove", i, prev_wwn, curr_wwn);
-            mpt3sas_hotunplug(s, topo->cached_devices + i, i);
+            mpt3sas_hotunplug(s, topo->cached_devices + i);
         }
         else if (prev_wwn == 0) {
             trace_mpt3sas_sas_topology_change("add", i, prev_wwn, curr_wwn);
-            mpt3sas_hotplug(s, newly_scaned_devices + i, i);
+            mpt3sas_hotplug(s, newly_scaned_devices + i);
         }
         else {
             trace_mpt3sas_sas_topology_change("replace", i, prev_wwn, curr_wwn);
-            mpt3sas_hotunplug(s, topo->cached_devices + i, i);
-            mpt3sas_hotplug(s, newly_scaned_devices + i, i);
+            mpt3sas_hotunplug(s, topo->cached_devices + i);
+            mpt3sas_hotplug(s, newly_scaned_devices + i);
         }
     }
 
@@ -3702,8 +3703,8 @@ static void mpt3sas3008_class_init(ObjectClass *oc, void *data)
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
     dc->desc = "LSI SAS 3008";
 
-    hc->plug = mpt3sas_qemu_hotplug;
-    hc->unplug = mpt3sas_qemu_hotunplug;
+    hc->plug = mpt3sas_hotplug;
+    hc->unplug = mpt3sas_hotunplug;
 }
 
 static const TypeInfo mpt3sas_info = {
