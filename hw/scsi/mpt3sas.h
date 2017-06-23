@@ -107,16 +107,6 @@ typedef struct Mpi2ManufacturingPage10_t {
 } Mpi2ManufacturingPage10_t;
 
 
-typedef struct MPT3SASTopologyCache {
-    QemuCond cond;
-    QemuMutex mutex;
-    QemuThread thread;
-    bool exit;
-    int scsi_target_nums;
-    SCSIDevice *cached_devices;
-} MPT3SASTopologyCache;
-
-
 struct MPT3SASState {
     PCIDevice dev;
     MemoryRegion mmio_io;
@@ -201,7 +191,6 @@ struct MPT3SASState {
     } expander;
 
     SCSIBus bus;
-    MPT3SASTopologyCache *topology_cache;
     QTAILQ_HEAD(, MPT3SASRequest) pending;
     QEMUBH *completed_request_bh;
 };
