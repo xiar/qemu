@@ -2751,7 +2751,7 @@ static void mpt3sas_add_events(MPT3SASState *s)
         bool exp_added = false;
 
         /* notify guest driver sas topology change (HBA PHY Change) */
-        mpt3sas_phy_change_list_event_enqueue(s, enclosure_handle,
+        mpt3sas_phy_change_list_event_enqueue(s, MPT3SAS_ENCLOSURE_HANDLE_START,
                                            0x0, /* expander device handle */
                                            MPT3SAS_EXPANDER_HANDLE_START + expander, /* attached device handle */
                                            MPT3SAS_NUM_PHYS, /* number phys */
@@ -3349,6 +3349,17 @@ static void mpt3sas_request_cancelled(SCSIRequest *sreq)
 {
 }
 
+/* If there is only one expander attached to HBA,
+ * then only first 4 phys on HBA used as a wide port will
+ * be connected to the expander.
+ * If there are two expanders, the first four phys
+ * on HBA will be conntected to the first expander,
+ * the other 4 phys will be connected to the second
+ * expander.
+ *
+ * there are 4 fours will be used as the expansion port
+ * for building more complicated topology, not supported yet.
+ */
 static void mpt3sas_init_expander(MPT3SASState *s)
 {
     if (!s->expander.all_phys)
@@ -3357,19 +3368,19 @@ static void mpt3sas_init_expander(MPT3SASState *s)
     s->expander.all_phys += 1; // Leave one virtual phy for enclosure target
     
     if (!s->expander.upstream_phys || (s->expander.upstream_phys > MPT3SAS_NUM_PHYS / s->expander.count))
-        s->expander.upstream_phys = MPT3SAS_NUM_PHYS / s->expander.count;
+        s->expander.upstream_phys = 4;
 
     // Expander PHY0-PHY3 <----> HBA PHY0-PHY3
     // Expander PHY4-PHY7 <----> [ X X X X ]
+    //
     if (!s->expander.downstream_phys)
-        s->expander.downstream_phys = s->expander.all_phys - s->expander.downstream_start_phy;
+        s->expander.downstream_phys = s->expander.all_phys - MPT3SAS_NUM_PHYS; // Leave 4 PHYs for expansion port
 
     if (s->expander.upstream_start_phy > s->expander.all_phys - MPT3SAS_NUM_PHYS - 1)
         s->expander.upstream_start_phy = s->expander.all_phys - MPT3SAS_NUM_PHYS - 1;
 
     if (s->expander.upstream_start_phy == s->expander.downstream_start_phy ||
-        (s->expander.upstream_start_phy + s->expander.upstream_phys) != s->expander.downstream_start_phy ||
-        (s->expander.downstream_start_phy + s->expander.downstream_phys) != s->expander.upstream_start_phy) {
+        ((s->expander.upstream_start_phy + s->expander.upstream_phys) > s->expander.all_phys - 1)) {
         s->expander.upstream_start_phy = 0;
         s->expander.downstream_start_phy = MPT3SAS_NUM_PHYS;
     }
@@ -3636,7 +3647,7 @@ static Property mpt3sas_properties[] = {
     DEFINE_PROP_BIT("use_msix", MPT3SASState, msix_available, 0, true),
     DEFINE_PROP_UINT32("expander-count", MPT3SASState, expander.count, MPT3SAS_EXPANDER_COUNT),
     DEFINE_PROP_UINT32("expander-phys", MPT3SASState, expander.all_phys, MPT3SAS_EXPANDER_NUM_PHYS),
-    DEFINE_PROP_UINT32("downstream-start-phy", MPT3SASState, expander.downstream_start_phy, MPT3SAS_NUM_PHYS),
+    DEFINE_PROP_UINT32("downstream-start-phy", MPT3SASState, expander.downstream_start_phy, 0),
     DEFINE_PROP_UINT32("upstream-start-phy", MPT3SASState, expander.upstream_start_phy, 0),
     DEFINE_PROP_UINT32("upstream-phys", MPT3SASState, expander.upstream_phys, 0),
     DEFINE_PROP_UINT32("downstream-phys", MPT3SASState, expander.downstream_phys, 0),
