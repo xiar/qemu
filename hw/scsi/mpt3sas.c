@@ -125,7 +125,7 @@ typedef struct MPT3SASConfigPage {
 
 #define PHY_INDEX(s, scsi_id) ((scsi_id) % (s)->expander.downstream_phys)
 #define SCSI_ID_TO_EXP_PHY(s, scsi_id) (PHY_INDEX((s), (scsi_id)) == s->expander.downstream_phys - 1 ? (s)->expander.all_phys - 1 : (s)->expander.downstream_start_phy + PHY_INDEX((s), (scsi_id)))
-#define EXP_PHY_TO_SCSI_ID(s, exp_id, phy_id) ((phy_id) == (s)->expander.all_phys - 1 ? (s)->expander.downstream_phys - 1 : (phy_id) + (exp_id) * (s)->expander.downstream_phys - (s)->expander.downstream_start_phy)
+#define EXP_PHY_TO_SCSI_ID(s, exp_id, phy_id) ((phy_id) == (s)->expander.all_phys - 1 ? ((exp_id + 1) * (s)->expander.downstream_phys) - 1 : (phy_id) + (exp_id) * (s)->expander.downstream_phys - (s)->expander.downstream_start_phy)
 
 #if 0
 static int mpt3sas_get_scsi_drive_num(MPT3SASState *s)
@@ -2685,7 +2685,6 @@ static int mpt3sas_disk_change_list_event_enqueue(MPT3SASState *s, uint16_t encl
             break;
 
         uint16_t dev_handle = SCSI_ID_TO_HANDLE(sdev->id);
-
         trace_mpt3sas_event_add_device(sdev, dev_handle, sdev->id, SCSI_ID_TO_EXP_PHY(s, sdev->id));
 
         sas_topology_change_list->PHY[entries].AttachedDevHandle = cpu_to_le16(dev_handle);
@@ -2748,7 +2747,6 @@ static void mpt3sas_add_events(MPT3SASState *s)
 
     for (expander = 0; expander < s->expander.count; expander++) {
         uint32_t scsi_id_idx = expander * s->expander.downstream_phys;
-        bool exp_added = false;
 
         /* notify guest driver sas topology change (HBA PHY Change) */
         mpt3sas_phy_change_list_event_enqueue(s, MPT3SAS_ENCLOSURE_HANDLE_START,
@@ -2770,15 +2768,14 @@ static void mpt3sas_add_events(MPT3SASState *s)
 
 
         /* notify guest driver sas topology change(report expander PHY), add expander and drives */
-        while (scsi_id_idx != (expander + 1) * s->expander.downstream_phys) {
+        while (scsi_id_idx < (expander + 1) * s->expander.downstream_phys) {
             scsi_id_idx = mpt3sas_disk_change_list_event_enqueue(s, enclosure_handle + expander,
                                             MPT3SAS_EXPANDER_HANDLE_START + expander, /* expander handle */
                                             s->expander.all_phys, /* num phys */
                                             scsi_id_idx, /* start phy number */
-                                            exp_added ? MPI2_EVENT_SAS_TOPO_ES_RESPONDING : MPI2_EVENT_SAS_TOPO_ES_ADDED,
+                                            MPI2_EVENT_SAS_TOPO_ES_ADDED,
                                             expander, /* physical port */
                                             MPI2_EVENT_SAS_TOPO_RC_TARG_ADDED); 
-            exp_added = true;
         }
 
         /* send change list event for phys that forming the wide port */
