@@ -214,6 +214,12 @@ typedef struct IDEDMAOps IDEDMAOps;
 #error "IDE_DMA_BUF_SECTORS must be bigger or equal to MAX_MULT_SECTORS"
 #endif
 
+
+/* Security Feature set defines*/
+typedef enum { SEC0, SEC1, SEC2, SEC3, SEC4, SEC5, SEC6 } SecuritySec;
+
+#define SECURITY_PASS_LENGTH 32
+
 /* ATAPI defines */
 
 #define ATAPI_PACKET_SIZE 12
@@ -342,7 +348,13 @@ enum ide_dma_cmd {
 };
 
 #define ide_cmd_is_read(s) \
-	((s)->dma_cmd == IDE_DMA_READ)
+       ((s)->dma_cmd == IDE_DMA_READ)
+
+typedef struct SecurityState {
+    bool enabled;
+    bool locked;
+    bool frozen;
+} SecurityState;
 
 typedef struct IDEBufferedRequest {
     QLIST_ENTRY(IDEBufferedRequest) list;
@@ -442,6 +454,14 @@ struct IDEState {
     uint8_t *smart_selftest_data;
     /* AHCI */
     int ncq_queues;
+    /* Security Feature set */
+    SecuritySec security_sec;
+    uint8_t security_password_user[32];
+    uint8_t security_password_master[32];
+    uint8_t master_pass_identifier[2];
+    int pass_attempt_counter;
+    bool erase_prepare_succeed;
+    bool master_pass_capability;
 };
 
 struct IDEDMAOps {
